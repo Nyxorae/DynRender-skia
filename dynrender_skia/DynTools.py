@@ -47,38 +47,55 @@ async def get_pictures(
             return await request_img(client, url, size)
 
 
-async def request_img(client: httpx.AsyncClient, url: str, size: Optional[tuple[int, int]]) -> Optional[skia.Image]:
+async def request_img(
+    client: httpx.AsyncClient,
+    url: str,
+    size: Optional[tuple[int, int]],
+) -> Optional[skia.Image]:
     """
-    Request an image from a URL and optionally resize it.
+    Fetch and optionally resize an image from a URL.
 
-    This function attempts to fetch an image from a specified URL using the provided httpx client,
-    decode it into a skia.Image, and resize it if a size is specified.
+    This function performs an HTTP GET request using the provided client,
+    decodes the response content into a ``skia.Image``, and optionally resizes
+    the image if a target size is given.
+
+    Network-related errors and non-2xx HTTP responses are propagated to the
+    caller. If the image cannot be decoded from the response content, ``None``
+    is returned.
 
     Args:
-        client (httpx.AsyncClient): The HTTP client to use for the request.
-        url (str): The URL from which to fetch the image.
-        size (Optional[tuple[int, int]]): A tuple specifying the width and height to which the image should be
-        resized. If None, the image is returned in its original size.
+        client (httpx.AsyncClient):
+            The HTTP client used to perform the request.
+        url (str):
+            The URL of the image to fetch.
+        size (Optional[tuple[int, int]]):
+            A ``(width, height)`` tuple specifying the desired output size.
+            If ``None``, the image is returned at its original dimensions.
 
     Returns:
-        Optional[skia.Image]: The fetched and resized skia.Image, or None if the image could not be fetched or decoded.
+        Optional[skia.Image]:
+            The decoded (and optionally resized) image, or ``None`` if the
+            response content cannot be decoded into a valid image.
 
     Raises:
-        httpx.HTTPStatusError: If the HTTP request returns an unsuccessful status code.
-        Exception: If an unexpected error occurs during the fetching or decoding of the image.
+        httpx.RequestError:
+            If a network error occurs while sending the request.
+        httpx.HTTPStatusError:
+            If the server responds with a non-2xx status code.
     """
-    try:
-        response = await client.get(url)
-        img: skia.Image = skia.Image.MakeFromEncoded(response.content)  # type: ignore
-        if img is None:
-            logger.error("Image decode error or request returned none in content")
-        return img.resize(*size) if size is not None else img
-    except (httpx.RequestError, httpx.HTTPStatusError) as e:
-        logger.exception(f"Request or HTTP error occurred: {e}")
+    response = await client.get(url)
+    response.raise_for_status()
+
+    img = skia.Image.MakeFromEncoded(response.content)  # type: ignore[assignment]
+    if img is None:
+        logger.warning(f"Failed to decode image from {url}")
         return None
-    except Exception as e:
-        logger.exception(f"Unexpected error: {e}")
-        return None
+
+    if size is not None:
+        width, height = size
+        img = img.resize(width, height)
+
+    return img
 
 
 async def merge_pictures(img_list: list[ndarray]) -> ndarray:
