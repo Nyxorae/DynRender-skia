@@ -73,14 +73,14 @@ async def test_request_img_with_respx(resource_dir: pathlib.Path) -> None:
 
 @pytest.mark.asyncio
 async def test_request_img_with_respx_invalid_url() -> None:
-    with respx.mock() as mock:
+    async with respx.mock() as mock:
         url = "http://bilibili.com"
 
         mock.get(url).mock(side_effect=httpx.ConnectError("Connection error"))
 
         async with httpx.AsyncClient() as client:
-            img = await request_img(client, url, None)
-            assert img is None
+            with pytest.raises(httpx.ConnectError):
+                await request_img(client, url, None)
 
 
 @pytest.mark.asyncio
@@ -101,26 +101,27 @@ class TestRequestImg:
             assert img.height() == 100
             assert img.width() == 100
 
-    async def test_request_img_with_http_exception(self, client: httpx.AsyncClient, mock_img_url: str, caplog) -> None:
+    async def test_request_img_with_http_exception(self, client: httpx.AsyncClient, mock_img_url: str) -> None:
         async with respx.mock(base_url=mock_img_url) as mock:
             mock.get(mock_img_url).mock(side_effect=httpx.ConnectError("Connection error"))
 
-            _ = await request_img(client, mock_img_url, None)
-            assert "Request or HTTP error occurred" in caplog.text
+            with pytest.raises(httpx.ConnectError):
+                await request_img(client, mock_img_url, None)
 
     async def test_skia_encode_exception(self, client: httpx.AsyncClient, mock_img_url: str, caplog) -> None:
         async with respx.mock() as mock:
             img_content = None
             mock.get(mock_img_url).respond(content=img_content, status_code=200)
-            _ = await request_img(client, mock_img_url, None)
-            assert "Image decode error or request returned none in content" in caplog.text
+            result = await request_img(client, mock_img_url, None)
+            assert result is None
+            assert "Failed to decode image" in caplog.text
 
-    async def test_unexpected_exception(self, client: httpx.AsyncClient, mock_img_url: str, caplog):
+    async def test_unexpected_exception(self, client: httpx.AsyncClient, mock_img_url: str):
         async with respx.mock(base_url=mock_img_url) as mock:
             mock.get(mock_img_url).mock(side_effect=TypeError("Invalid type provided"))
 
-            _ = await request_img(client, mock_img_url, None)
-            assert "Unexpected error" in caplog.text
+            with pytest.raises(TypeError):
+                await request_img(client, mock_img_url, None)
 
 
 @pytest.mark.asyncio

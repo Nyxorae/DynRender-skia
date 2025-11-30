@@ -1,6 +1,8 @@
 import pathlib
 import shutil
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from _pytest.logging import LogCaptureFixture
@@ -11,7 +13,7 @@ from dynrender_skia.Core import DynRender
 
 
 @pytest.fixture(scope="session")
-def shared_cache(tmp_path_factory: TempPathFactory) -> object:
+def shared_cache(tmp_path_factory: TempPathFactory) -> Generator[Path, Any, None]:
     cache_dir = tmp_path_factory.mktemp("cache", numbered=False)
     logger.info(f"创建共享缓存目录：{cache_dir}")
     yield cache_dir
