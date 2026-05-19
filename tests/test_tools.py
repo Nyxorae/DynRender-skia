@@ -12,6 +12,7 @@ import skia
 from dynrender_skia.config import create_style
 from dynrender_skia.graphics import merge_pictures, request_img, fetch_images, TextDrawer, paste
 from dynrender_skia.exceptions import ParseError
+from dynrender_skia.typesetter import Atom, CharClass
 
 
 @pytest.mark.asyncio
@@ -335,94 +336,137 @@ class TestTextDrawerFunction:
         font_style = "Normal"
         self.draw_text_instance = TextDrawer(create_style(font_family, emoji_font_family, font_style))
 
-        # 模拟方法
+        # Mock methods that draw_text calls directly
         self.draw_text_instance.set_font_sizes = MagicMock()
-        self.draw_text_instance.initialize_paint = MagicMock(
-            return_value=skia.Paint(AntiAlias=True, Color=skia.Color(*self.font_color))
-        )
-        self.draw_text_instance.extract_emoji_info = AsyncMock(return_value=(self.text, emoji_info or {}))
-        self.draw_text_instance._handle_emoji = MagicMock(return_value=(7, "🌍", skia.Font()))
+        self.mock_paint = skia.Paint(AntiAlias=True, Color=skia.Color(*self.font_color))
+        self.draw_text_instance.initialize_paint = MagicMock(return_value=self.mock_paint)
+        self.draw_text_instance.get_emoji_text = AsyncMock(return_value=emoji_info or {})
         self.draw_text_instance._font_contains_character = MagicMock(return_value=True)
+        self.draw_text_instance.match_font = MagicMock(return_value=skia.Font())
+        self.draw_text_instance.draw_ellipsis = MagicMock()
 
-        # 使用实际的 skia.Font 对象
-        self.actual_font = skia.Font()
-        self.draw_text_instance.match_font = MagicMock(return_value=self.actual_font)
-        self.draw_text_instance.text_font = self.actual_font
+    @staticmethod
+    def _make_atoms(text: str, *, width: float = 10.0) -> list[Atom]:
+        """Build Atom objects simulating what atomize_text produces for plain text."""
+        atoms: list[Atom] = []
+        for ch in text:
+            if ch == "\n":
+                atoms.append(Atom(text="\n", width=0.0, char_class=CharClass.MANDATORY_BREAK))
+            else:
+                atoms.append(Atom(text=ch, width=width, char_class=CharClass.ALPHABETIC))
+        return atoms
 
-        # 包装 measureText 行为
-        self.original_measure_text = self.actual_font.measureText
-
-        def measure_text_wrapper(_text):
-            return 50 if "🌍" in _text else 500
-
-        self.measure_text_mock = patch.object(skia.Font, "measureText", side_effect=measure_text_wrapper)
-        self.measure_text_mock.start()
-
-        self.draw_text_instance._needs_new_line = MagicMock(side_effect=lambda x, _: x > 200)
-        self.draw_text_instance._advance_to_next_line = MagicMock(return_value=(80, 10))
-
-    async def _teardown_method(self):
-        self.measure_text_mock.stop()
+    @staticmethod
+    def _mock_typesetter(atoms: list[Atom], lines: list[tuple[int, int]]):
+        """Set up mocks for atomize_text and KinsokuLineBreaker. Returns stop-callables."""
+        p_atomize = patch("dynrender_skia.typesetter.atomize_text", return_value=atoms)
+        p_breaker = patch("dynrender_skia.typesetter.KinsokuLineBreaker")
+        p_atomize.start()
+        mock_breaker_class = p_breaker.start()
+        mock_breaker = MagicMock()
+        mock_breaker.break_lines.return_value = lines
+        mock_breaker_class.return_value = mock_breaker
+        return p_atomize, p_breaker
 
     async def test_draw_text(self):
         await self.async_setup()
-        await self.draw_text_instance.draw_text(
-            self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
-        )
+        atoms = self._make_atoms(self.text)
+        p1, p2 = self._mock_typesetter(atoms, [(0, len(atoms))])
 
-        self.draw_text_instance.set_font_sizes.assert_called_once_with(self.font_size)  # type: ignore
-        self.draw_text_instance.initialize_paint.assert_called_once_with(self.font_color)  # type: ignore
-        self.draw_text_instance.extract_emoji_info.assert_called_once_with(self.text)  # type: ignore
-        assert self.draw_text_instance._handle_emoji.call_count == 0  # type: ignore
-        assert self.draw_text_instance._font_contains_character.call_count > 0  # type: ignore
-        assert self.draw_text_instance._needs_new_line.call_count > 0  # type: ignore
+        try:
+            await self.draw_text_instance.draw_text(
+                self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
+            )
 
-        await self._teardown_method()
+            self.draw_text_instance.set_font_sizes.assert_called_once_with(self.font_size)
+            self.draw_text_instance.initialize_paint.assert_called_once_with(self.font_color)
+            self.draw_text_instance.get_emoji_text.assert_called_once_with(self.text)
+            assert self.canvas.drawTextBlob.call_count == len(atoms)
+            assert self.draw_text_instance._font_contains_character.call_count > 0
+        finally:
+            p1.stop()
+            p2.stop()
 
     async def test_draw_text_with_newline(self):
         await self.async_setup(text="Hello,\nworld!")
-        await self.draw_text_instance.draw_text(
-            self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
-        )
+        atoms = self._make_atoms(self.text)
+        # Two lines: first ends before \n, second starts after \n
+        lines = [(0, 6), (7, len(atoms))]
+        p1, p2 = self._mock_typesetter(atoms, lines)
 
-        assert self.canvas.drawTextBlob.call_count == 6
+        try:
+            await self.draw_text_instance.draw_text(
+                self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
+            )
 
-        await self._teardown_method()
+            # 13 atoms total, but 1 is MANDATORY_BREAK (skipped) → 12 drawTextBlob calls
+            assert self.canvas.drawTextBlob.call_count == len(atoms) - 1
+        finally:
+            p1.stop()
+            p2.stop()
 
     async def test_draw_text_with_emoji(self):
         await self.async_setup(text="Hello 🌍", emoji_info={6: [7, "🌍"]})
-        await self.draw_text_instance.draw_text(
-            self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
-        )
+        # Build atoms including an emoji atom
+        atoms = [
+            Atom(text="H", width=10.0, char_class=CharClass.ALPHABETIC),
+            Atom(text="e", width=10.0, char_class=CharClass.ALPHABETIC),
+            Atom(text="l", width=10.0, char_class=CharClass.ALPHABETIC),
+            Atom(text="l", width=10.0, char_class=CharClass.ALPHABETIC),
+            Atom(text="o", width=10.0, char_class=CharClass.ALPHABETIC),
+            Atom(text=" ", width=10.0, char_class=CharClass.SPACE),
+            Atom(text="🌍", width=50.0, char_class=CharClass.EMOJI),
+        ]
+        p1, p2 = self._mock_typesetter(atoms, [(0, len(atoms))])
 
-        assert self.draw_text_instance._handle_emoji.call_count == 1  # type: ignore
+        try:
+            await self.draw_text_instance.draw_text(
+                self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
+            )
 
-        await self._teardown_method()
+            assert self.draw_text_instance.get_emoji_text.call_count == 1
+            assert self.canvas.drawTextBlob.call_count == len(atoms)
+        finally:
+            p1.stop()
+            p2.stop()
 
     async def test_draw_text_with_wrapping(self):
         await self.async_setup()
-        self.draw_text_instance._needs_new_line = MagicMock(side_effect=lambda x, _: x > 50)  # 小于50就换行
+        atoms = self._make_atoms(self.text)
+        # Two lines to trigger wrapping
+        lines = [(0, 5), (5, len(atoms))]
+        p1, p2 = self._mock_typesetter(atoms, lines)
 
-        await self.draw_text_instance.draw_text(
-            self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
-        )
+        try:
+            await self.draw_text_instance.draw_text(
+                self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
+            )
 
-        assert self.draw_text_instance._advance_to_next_line.call_count > 0  # type: ignore
-
-        await self._teardown_method()
+            # All atoms drawn across two lines
+            assert self.canvas.drawTextBlob.call_count == len(atoms)
+        finally:
+            p1.stop()
+            p2.stop()
 
     async def test_draw_text_exceeds_max_height(self):
         await self.async_setup()
-        self.draw_text_instance._advance_to_next_line = MagicMock(side_effect=lambda *args: (args[0] + 100, args[1]))
+        atoms = self._make_atoms(self.text)
+        # y_bound=30, line_spacing=20: after first line current_y goes 20→40 >= 30 → ellipsis
+        self.position_and_bounds = (10, 20, 200, 30, 20)
+        lines = [(0, 4), (4, len(atoms))]
+        p1, p2 = self._mock_typesetter(atoms, lines)
 
-        await self.draw_text_instance.draw_text(
-            self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
-        )
+        try:
+            await self.draw_text_instance.draw_text(
+                self.canvas, self.text, self.font_size, self.position_and_bounds, self.font_color
+            )
 
-        assert self.draw_text_instance._advance_to_next_line.call_count > 0
-        assert self.canvas.drawTextBlob.call_count < len(self.text)
-
-        await self._teardown_method()
+            # Only the first line's 4 atoms are drawn; second line is cut off by y_bound
+            assert self.canvas.drawTextBlob.call_count == 4
+            assert self.draw_text_instance.draw_ellipsis.call_count == 1
+        finally:
+            p1.stop()
+            p2.stop()
 
 
 class TestMatchFontMethod:

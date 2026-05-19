@@ -8,6 +8,7 @@ import emoji
 import httpx
 import numpy as np
 import skia
+from loguru import logger
 from numpy import ndarray
 
 from .config import PolyStyle
@@ -40,12 +41,13 @@ async def request_img(client: httpx.AsyncClient, url: str, size: Optional[tuple[
         response = await client.get(url)
         img: skia.Image = skia.Image.MakeFromEncoded(response.content)  # type: ignore
         if img is None:
-            import logging
-            logging.getLogger().error("Image decode error or request returned none in content")
+            logger.error("Image decode error or request returned none in content")
         return img.resize(*size) if size is not None else img
-    except (httpx.RequestError, httpx.HTTPStatusError):
+    except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        logger.exception(f"Request or HTTP error occurred: {e}")
         return None
-    except Exception:
+    except Exception as e:
+        logger.exception(f"Unexpected error: {e}")
         return None
 
 
@@ -85,9 +87,8 @@ async def paste(canvas: skia.Canvas, target: skia.Image, position: tuple, clear_
         canvas.drawImageRect(target, skia.Rect(0, 0, img_width, img_height), rec)
         if clear_background:
             canvas.restore()
-    except AttributeError:
-        import logging
-        logging.getLogger().exception("Failed to paste image")
+    except AttributeError as e:
+        logger.exception(f"Failed to paste image: {e!s}")
 
 
 # ---------------------------------------------------------------------------
@@ -248,12 +249,12 @@ class TextDrawer:
     def draw_ellipsis(canvas: skia.Canvas, x: int, y: int, font: skia.Font, paint: skia.Paint) -> None:
         canvas.drawTextBlob(skia.TextBlob("...", font), x, y, paint)
 
-    def _advance_to_next_line(self, y: int, spacing: int, max_h: int, start_x: int,
-                   canvas: skia.Canvas, font: skia.Font, paint: skia.Paint, cur_x: int) -> tuple[int, int]:
-        if y + spacing >= max_h:
-            self.draw_ellipsis(canvas, cur_x, y, font, paint)
-            return max_h, start_x
-        return y + spacing, start_x
+    def _advance_to_next_line(self, current_y: int, line_spacing: int, max_height: int, initial_x: int,
+                   canvas: skia.Canvas, font: skia.Font, paint: skia.Paint, current_x: int) -> tuple[int, int]:
+        if current_y + line_spacing >= max_height:
+            self.draw_ellipsis(canvas, current_x, current_y, font, paint)
+            return max_height, initial_x
+        return current_y + line_spacing, initial_x
 
     def _handle_emoji(self, offset: int, emoji_info: dict[int, list]) -> tuple[int, str, skia.Font]:
         try:
