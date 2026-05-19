@@ -1,15 +1,17 @@
+"""Exception hierarchy for dynrender-skia."""
+
 from typing import Optional
 
 
 class DynRenderException(Exception):
-    """Base class for exceptions in this module."""
+    """Base exception for this module."""
 
     def __str__(self) -> str:
         return self.__repr__()
 
 
 class SkiaBaseError(DynRenderException):
-    """Skia Base Error."""
+    """Skia related error."""
 
     def __init__(self, message: Optional[str] = None, status: int = 0) -> None:
         self.message = message
@@ -20,12 +22,12 @@ class SkiaBaseError(DynRenderException):
 
 
 class ImageDecodeError(SkiaBaseError):
-    """Exception raised for errors in the image decoding process."""
+    """Image decoding failed."""
 
 
 class DrawingError(SkiaBaseError):
-    """Exception raised for errors during drawing operations."""
+    """Drawing operation failed."""
 
 
 class ParseError(SkiaBaseError):
-    """Exception raised for errors during parsing operations."""
+    """Parsing operation failed."""

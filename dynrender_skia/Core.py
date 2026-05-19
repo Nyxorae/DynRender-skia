@@ -1,26 +1,19 @@
-"""
-@File    :   Core.py
-@Time    :   2023/07/13 15:21:46
-@Author  :   Polyisoprene
-@Version :   1.0
-@Desc    :   None
-"""
+"""Main rendering engine — orchestrates the compositing pipeline."""
 
 import asyncio
+from os import path
 from typing import Optional
 
 from dynamicadaptor.Message import RenderMessage
 
-from .DynAdditional import BiliAdditional
-from .DynConfig import MakeStaticFile, SetDynStyle
-from .DynHeader import BiliHeader, Footer
-from .DynMajor import BiliMajor
-from .DynRepost import BiliRepost
-from .DynText import BiliText
-from .DynTools import merge_pictures
+from .config import create_style, init_static_path
+from .graphics import merge_pictures
+from .renderers import BiliHeader, Footer, BiliText, BiliRepost, get_major_renderer, get_additional_renderer
 
 
 class DynRender:
+    """Entry point for rendering Bilibili dynamic content to images."""
+
     def __init__(
         self,
         font_family: str = "Noto Sans SC",
@@ -28,30 +21,34 @@ class DynRender:
         font_style: str = "Normal",
         static_path: Optional[str] = None,
     ) -> None:
-        """create static file and set font family and font style
-
-        Args:
-            font_family (str, optional): font family name like "Noto Sans CJK SC". Defaults to "Noto Sans CJK SC".
-            emoji_font_family (str, optional):emoji font family name like "Noto Color Emoji".
-            Defaults to "Noto Sans CJK SC".
-            font_style (str, optional): font style like "Normal、Bold、Italic、BoldItalic". Defaults to "Normal".
-            static_path (str, optional): static file path,must be absolute path. Defaults to None.
-        """
-        self.static_path = MakeStaticFile(static_path).check_cache_file
-        self.style = SetDynStyle(font_family, emoji_font_family, font_style).set_style
+        self.static_path = init_static_path(static_path)
+        self.style = create_style(font_family, emoji_font_family, font_style)
 
     async def run(self, message: RenderMessage):
+        src_path = path.join(self.static_path, "Src")
         tasks = [BiliHeader(self.static_path, self.style).run(message.header)]
+
         if message.text is not None:
             tasks.append(BiliText(self.static_path, self.style).run(message.text))
+
         if message.major is not None:
-            tasks.append(BiliMajor(self.static_path, self.style).run(message.major))
+            cls = get_major_renderer(message.major.type)
+            if cls:
+                tasks.append(cls(src_path, self.style, message.major).run())
+            else:
+                import logging
+                logging.getLogger().warning(f"{message.major.type} is not supported")
 
         if message.forward is not None:
             tasks.append(BiliRepost(self.static_path, self.style).run(message.forward))
 
         if message.additional is not None:
-            tasks.append(BiliAdditional(self.static_path, self.style).run(message.additional))
+            cls = get_additional_renderer(message.additional.type)
+            if cls:
+                tasks.append(cls(src_path, self.style, message.additional).run())
+            else:
+                import logging
+                logging.getLogger().warning(f"{message.additional.type} IS NOT SUPPORT NOW")
 
         tasks.append(Footer(self.static_path, self.style).run())
         result = await asyncio.gather(*tasks)
