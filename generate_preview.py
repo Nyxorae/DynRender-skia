@@ -6,7 +6,7 @@ import sys
 import httpx
 import skia
 from dynamicadaptor.DynamicConversion import formate_message
-from dynrender_skia.core import DynRender
+from dynrender_skia.Core import DynRender
 
 
 async def main(dynamic_id: str):
