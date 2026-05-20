@@ -306,7 +306,7 @@ class TextDrawer:
         for line_idx, (si, ei) in enumerate(lines):
             # Check if there is room for *this* line before drawing
             if line_idx > 0 and current_y >= y_bound:
-                self.draw_ellipsis(canvas, start_x, current_y - line_spacing,
+                self.draw_ellipsis(canvas, last_x, current_y - line_spacing,
                                    self.text_font, paint)
                 break
             current_x = start_x
@@ -319,4 +319,5 @@ class TextDrawer:
                     font = self.match_font(atom.text, font_size) or font
                 canvas.drawTextBlob(skia.TextBlob(atom.text, font), current_x, current_y, paint)
                 current_x += atom.width
+            last_x = current_x
             current_y += line_spacing
