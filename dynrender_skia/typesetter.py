@@ -111,7 +111,11 @@ def _is_cjk(cp: int) -> bool:
 
 
 def classify_char(ch: str) -> CharClass:
-    """Classify a single character for line-breaking purposes."""
+    """Classify a character (or compound emoji) for line-breaking purposes.
+
+    Multi-character strings (emoji + variation selector) are classified
+    by their first code-point only.
+    """
     if ch in _FORBIDDEN_LINE_START:
         return CharClass.NON_STARTER if ch in ",.，。、;；:：?!！？、。，．：；！？…%％" else CharClass.CLOSE
     if ch in _FORBIDDEN_LINE_END:
@@ -373,18 +377,28 @@ def atomize_text(
         if offset in emoji_map:
             end_pos, emoji_char = emoji_map[offset]
             offset = end_pos
-            font = emoji_font
-            ch = emoji_char
-        else:
-            offset += 1
-            font = default_font
+            # Zero-width emoji modifiers (FE0F/FE0E variation selectors,
+            # U+1F3FB-U+1F3FF skin tones) — keep them in the atom for
+            # correct combined rendering, but measure only the base char.
+            render_ch = ch  # full emoji including modifiers for rendering
+            while len(ch) > 1 and (ch[-1] in '️︎'
+                                   or '\U0001f3fb' <= ch[-1] <= '\U0001f3ff'):
+                ch = ch[:-1]
+            while offset < total and text[offset] in '️︎':
+                offset += 1
+            w = measure_fn(ch, font)  # width from base char only
+            atom_class = CharClass.EMOJI
+            # If the font can't render the full emoji (modifiers = glyph 0),
+            # fall back to the base character to avoid tofu squares.
+            if len(render_ch) > 1 and any(g == 0 for g in font.textToGlyphs(render_ch)):
+                render_ch = ch
+            atoms.append(Atom(render_ch, w, atom_class, font))
+            continue
 
+        offset += 1
+        font = default_font
         w = measure_fn(ch, font)
         atom_class = classify_char(ch)
-        # Override class for emoji
-        if atom_class in (CharClass.CLOSE, CharClass.OPEN, CharClass.NON_STARTER):
-            # Emoji char that happens to look like punctuation — trust the original
-            pass
         atoms.append(Atom(ch, w, atom_class, font))
 
     return atoms

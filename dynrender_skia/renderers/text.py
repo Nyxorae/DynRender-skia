@@ -104,7 +104,11 @@ class BiliText:
                         font = skia.Font(typeface, self.style.font.font_size.text)
                     else:
                         font = self.text_font
-                blob = skia.TextBlob(atom.text, font)
+                draw_text = atom.text
+                if atom.char_class == CharClass.EMOJI and len(atom.text) > 1:
+                    if any(g == 0 for g in font.textToGlyphs(atom.text)):
+                        draw_text = atom.text[0]
+                blob = skia.TextBlob(draw_text, font)
                 canvas.drawTextBlob(
                     blob, x,
                     int(60 - (60 - self.style.font.font_size.text) / 2),
@@ -149,8 +153,16 @@ class BiliText:
                     if offset in emoji_map:
                         end_pos, emoji_char = emoji_map[offset]
                         offset = end_pos
+                        # Zero-width emoji modifiers — keep in atom for
+                        # correct combined rendering, measure base only.
+                        if offset < total and text[offset] in '️︎':
+                            offset += 1
                         font = self.emoji_font
                         ch = emoji_char
+                        render_ch = ch  # full emoji for rendering
+                        while len(ch) > 1 and (ch[-1] in '️︎'
+                                               or '\U0001f3fb' <= ch[-1] <= '\U0001f3ff'):
+                            ch = ch[:-1]
                         # Fall back to system font if emoji font can't render it
                         if font.textToGlyphs(ch)[0] == 0:
                             if typeface := skia.FontMgr().matchFamilyStyleCharacter(
@@ -159,6 +171,12 @@ class BiliText:
                                 font = skia.Font(typeface, self.style.font.font_size.text)
                         w = font.measureText(ch)
                         char_class = CharClass.EMOJI
+                        # If font can't render the full emoji sequence
+                        # (modifiers = glyph 0), fall back to base char
+                        # to avoid tofu squares.
+                        if len(render_ch) > 1 and any(g == 0 for g in font.textToGlyphs(render_ch)):
+                            render_ch = ch
+                        atoms.append(Atom(render_ch, w, char_class, font, paint_color=color))
                     else:
                         offset += 1
                         # Try width cache first
@@ -183,7 +201,7 @@ class BiliText:
                             w = font.measureText(ch)
                             char_class = classify_char(ch)
                             width_cache[wkey] = w
-                    atoms.append(Atom(ch, w, char_class, font, paint_color=color))
+                        atoms.append(Atom(ch, w, char_class, font, paint_color=color))
 
             elif node_type == "RICH_TEXT_NODE_TYPE_EMOJI":
                 img = self.emoji_dict.get(node.text)

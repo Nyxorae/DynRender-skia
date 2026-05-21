@@ -382,17 +382,15 @@ class TextDrawer:
     def match_font(self, char: str, font_size: int) -> Optional[skia.Font]:
         """Try to find a system font that can render *char*.
 
-        Unlike :meth:`_resolver.resolve`, this does NOT fall back to
-        ``self.text_font`` — it returns ``None`` when the system has no
-        match, preserving the original API contract expected by tests.
+        First tries the configured font family, then falls back to
+        any available system font (broad search).  Returns ``None``
+        only when no font on the system supports the character.
         """
-        if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-            self.style.font.font_family,
-            self.style.font.font_style,
-            ["zh", "en"],
-            ord(char),
-        ):
-            return skia.Font(typeface, font_size)
+        for family in (self.style.font.font_family, ""):
+            if typeface := skia.FontMgr().matchFamilyStyleCharacter(
+                family, self.style.font.font_style, ["zh", "en"], ord(char[0]),
+            ):
+                return skia.Font(typeface, font_size)
         return None
 
     def set_font_sizes(self, size: int) -> None:
@@ -505,7 +503,13 @@ class TextDrawer:
                     if font_key not in self._font_cache:
                         self._font_cache[font_key] = self.match_font(atom.text, font_size) or font
                     font = self._font_cache[font_key]
-                canvas.drawTextBlob(skia.TextBlob(atom.text, font), current_x, current_y, paint)
+                # If the resolved font can't render the full emoji sequence
+                # (modifiers produce tofu), strip them back to base char.
+                draw_text = atom.text
+                if atom.char_class == CharClass.EMOJI and len(atom.text) > 1:
+                    if any(g == 0 for g in font.textToGlyphs(atom.text)):
+                        draw_text = atom.text[0]
+                canvas.drawTextBlob(skia.TextBlob(draw_text, font), current_x, current_y, paint)
                 current_x += atom.width
             last_x = current_x
             current_y += line_spacing
