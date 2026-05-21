@@ -105,7 +105,11 @@ class BiliText:
                     else:
                         font = self.text_font
                 blob = skia.TextBlob(atom.text, font)
-                canvas.drawTextBlob(blob, x, int(60 - (60 - self.style.font.font_size.text) / 2), paint)
+                canvas.drawTextBlob(
+                    blob, x,
+                    int(60 - (60 - self.style.font.font_size.text) / 2),
+                    paint,
+                )
                 x += atom.width
             self.image_list.append(canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType))
 
@@ -147,6 +151,12 @@ class BiliText:
                         offset = end_pos
                         font = self.emoji_font
                         ch = emoji_char
+                        # Fall back to system font if emoji font can't render it
+                        if font.textToGlyphs(ch)[0] == 0:
+                            if typeface := skia.FontMgr().matchFamilyStyleCharacter(
+                                "", skia.FontStyle().Normal(), [], ord(ch[0]),
+                            ):
+                                font = skia.Font(typeface, self.style.font.font_size.text)
                         w = font.measureText(ch)
                         char_class = CharClass.EMOJI
                     else:
