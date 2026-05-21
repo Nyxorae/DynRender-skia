@@ -107,7 +107,17 @@ class BiliText:
                 draw_text = atom.text
                 if atom.char_class == CharClass.EMOJI and len(atom.text) > 1:
                     if any(g == 0 for g in font.textToGlyphs(atom.text)):
+                        # Font can't render the full sequence — strip modifiers
                         draw_text = atom.text[0]
+                    else:
+                        # HarfBuzz shaping for compound emoji (skin tones,
+                        # variation selectors).  y=5 matches the old top-aligned
+                        # emoji baseline; MakeFromShapedText uses a different
+                        # coordinate convention than plain TextBlob.
+                        blob = skia.TextBlob.MakeFromShapedText(atom.text, font)
+                        canvas.drawTextBlob(blob, x, 5, paint)
+                        x += atom.width
+                        continue
                 blob = skia.TextBlob(draw_text, font)
                 canvas.drawTextBlob(
                     blob, x,

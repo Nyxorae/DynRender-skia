@@ -503,13 +503,20 @@ class TextDrawer:
                     if font_key not in self._font_cache:
                         self._font_cache[font_key] = self.match_font(atom.text, font_size) or font
                     font = self._font_cache[font_key]
-                # If the resolved font can't render the full emoji sequence
-                # (modifiers produce tofu), strip them back to base char.
                 draw_text = atom.text
+                blob = None
                 if atom.char_class == CharClass.EMOJI and len(atom.text) > 1:
                     if any(g == 0 for g in font.textToGlyphs(atom.text)):
                         draw_text = atom.text[0]
-                canvas.drawTextBlob(skia.TextBlob(draw_text, font), current_x, current_y, paint)
+                    else:
+                        # HarfBuzz shaping to combine modifiers with base emoji
+                        blob = skia.TextBlob.MakeFromShapedText(atom.text, font)
+                        canvas.drawTextBlob(blob, current_x, current_y, paint)
+                        current_x += atom.width
+                        continue
+                if blob is None:
+                    blob = skia.TextBlob(draw_text, font)
+                canvas.drawTextBlob(blob, current_x, current_y, paint)
                 current_x += atom.width
             last_x = current_x
             current_y += line_spacing
