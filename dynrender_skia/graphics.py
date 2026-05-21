@@ -92,6 +92,85 @@ async def paste(canvas: skia.Canvas, target: skia.Image, position: tuple, clear_
 
 
 # ---------------------------------------------------------------------------
+# Canvas builder — flattens the repetitive surface→clear→shadow→clip flow
+# ---------------------------------------------------------------------------
+
+
+class CanvasBuilder:
+    """Builder pattern for Skia canvas construction.
+
+    Usage::
+
+        builder = CanvasBuilder(1080, 695).with_background(bg).with_shadow(
+            (35, 25, 1010, 655), 20, bg
+        ).with_clip((35, 25, 1010, 665), 20)
+        canvas = builder.build()
+        # ... draw on canvas ...
+        arr = builder.to_array()
+    """
+
+    def __init__(self, width: int, height: int) -> None:
+        self._surface = skia.Surface(width, height)
+        self._canvas = self._surface.getCanvas()
+        self._bg_color: tuple = (255, 255, 255, 255)
+
+    def with_background(self, color: tuple) -> "CanvasBuilder":
+        """Clear the canvas with *color* (RGBA tuple)."""
+        self._canvas.clear(skia.Color(*color))
+        self._bg_color = color
+        return self
+
+    def with_shadow(self, rect: tuple, corner: int, bg_color: tuple) -> "CanvasBuilder":
+        """Draw a rounded rectangle with a drop-shadow.
+
+        Args:
+            rect: ``(x, y, width, height)`` of the shadow area.
+            corner: Corner radius in pixels.  0 = sharp rectangle.
+            bg_color: Background color (the shadow is cast FROM this).
+        """
+        self._sync_shadow(rect, corner, bg_color)
+        return self
+
+    def with_clip(self, rect: tuple, corner: int) -> "CanvasBuilder":
+        """Clip subsequent drawing to a rounded rectangle.
+
+        Args:
+            rect: ``(x, y, width, height)``.
+            corner: Corner radius.
+        """
+        rec = skia.Rect.MakeXYWH(*rect)
+        self._canvas.clipRRect(skia.RRect(rec, corner, corner), skia.ClipOp.kIntersect)
+        return self
+
+    def build(self) -> skia.Canvas:
+        """Return the constructed canvas."""
+        return self._canvas
+
+    def to_array(self):
+        """Export the canvas contents as an RGBA numpy array."""
+        return self._canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
+
+    # -- internal ----------------------------------------------------------
+
+    async def _async_shadow(self, rect: tuple, corner: int, bg_color: tuple) -> None:
+        await draw_shadow(self._canvas, rect, corner, bg_color)
+
+    def _sync_shadow(self, rect: tuple, corner: int, bg_color: tuple) -> None:
+        """Synchronous shadow — use when ``asyncio`` is not needed."""
+        x, y, w, h = rect
+        rec = skia.Rect.MakeXYWH(x, y, w, h)
+        paint = skia.Paint(
+            Color=skia.Color(*bg_color),
+            AntiAlias=True,
+            ImageFilter=skia.ImageFilters.DropShadow(0, 0, 10, 10, skia.Color(120, 120, 120)),
+        )
+        if corner != 0:
+            self._canvas.drawRoundRect(rec, corner, corner, paint)
+        else:
+            self._canvas.drawRect(rec, paint)
+
+
+# ---------------------------------------------------------------------------
 # Shape / decoration helpers
 # ---------------------------------------------------------------------------
 
@@ -198,6 +277,16 @@ async def make_sub_tag(
 
 
 class TextDrawer:
+    """Unified text layout and drawing engine.
+
+    Uses :class:`FontResolver` (Chain-of-Responsibility) to find the
+    best font for each character, avoiding the 15+ duplicated
+    ``matchFamilyStyleCharacter`` calls that previously existed.
+
+    Public API — callers use :meth:`draw_text` for kinsoku-aware
+    rendering, or the static helpers for one-off paint/badge creation.
+    """
+
     def __init__(self, style: PolyStyle):
         self.style = style
         self.text_font = skia.Font(
@@ -208,22 +297,40 @@ class TextDrawer:
             skia.Typeface.MakeFromName(style.font.emoji_font_family, style.font.font_style),
             style.font.font_size.text,
         )
+        from .font_resolver import FontResolver
+        self._resolver = FontResolver(
+            style.font.font_family, style.font.font_style, style.font.emoji_font_family,
+        )
+
+    # ------------------------------------------------------------------
+    # Static helpers (used by tests)
+    # ------------------------------------------------------------------
 
     @staticmethod
     def initialize_paint(font_color: tuple) -> skia.Paint:
+        """Create an anti-aliased ``skia.Paint`` filled with *font_color*."""
         return skia.Paint(AntiAlias=True, Color=skia.Color(*font_color))
 
+    @staticmethod
+    def draw_ellipsis(
+        canvas: skia.Canvas, x: int, y: int, font: skia.Font, paint: skia.Paint,
+    ) -> None:
+        """Draw a "…" truncation marker at *(x, y)*."""
+        canvas.drawTextBlob(skia.TextBlob("...", font), x, y, paint)
+
+    # ------------------------------------------------------------------
+    # Font helpers
+    # ------------------------------------------------------------------
+
     def match_font(self, char: str, font_size: int) -> Optional[skia.Font]:
-        if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-            self.style.font.font_family,
-            self.style.font.font_style,
-            ["zh", "en"],
-            ord(char),
-        ):
-            return skia.Font(typeface, font_size)
-        return None
+        """Resolve the best font for *char* via the system font manager.
+
+        Returns ``None`` when even the system has no match.
+        """
+        return self._resolver.resolve(char, self.text_font, font_size)
 
     def set_font_sizes(self, size: int) -> None:
+        """Set both the text and emoji font sizes to *size*."""
         self.text_font.setSize(size)
         self.emoji_font.setSize(size)
 
@@ -239,15 +346,14 @@ class TextDrawer:
 
     @staticmethod
     def _font_contains_character(font: skia.Font, char: str) -> bool:
-        return font.textToGlyphs(char)[0] != 0
+        """Backward-compat wrapper — delegates to FontResolver."""
+        from .font_resolver import FontResolver
+        return FontResolver._font_contains_char(font, char)
 
     @staticmethod
     def _needs_new_line(x: int, max_w: int) -> bool:
+        """True when *x* exceeds the text area width, triggering a line break."""
         return x > max_w
-
-    @staticmethod
-    def draw_ellipsis(canvas: skia.Canvas, x: int, y: int, font: skia.Font, paint: skia.Paint) -> None:
-        canvas.drawTextBlob(skia.TextBlob("...", font), x, y, paint)
 
     def _advance_to_next_line(self, current_y: int, line_spacing: int, max_height: int, initial_x: int,
                    canvas: skia.Canvas, font: skia.Font, paint: skia.Paint, current_x: int) -> tuple[int, int]:

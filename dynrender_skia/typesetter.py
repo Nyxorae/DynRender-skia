@@ -161,15 +161,28 @@ class _LineCandidate:
 
 
 class KinsokuLineBreaker:
-    """Greedy line breaker with kinsoku correction passes.
+    """Greedy line breaker with two-pass kinsoku correction.
+
+    **Algorithm** (per line):
+
+    1. **Greedy fill** — accumulate atoms until ``max_width`` is exceeded,
+       recording the overflow point as a candidate break.
+    2. **Pull-back (追い出し)** — if the first character of the *next*
+       line is forbidden at line-start (e.g. ``。、，》〕」…``), pull the
+       last character(s) of the *current* line down.  Repeat until the
+       next line's first character is allowed.
+    3. **Push-forward (追い込み)** — if the last character of the
+       *current* line is forbidden at line-end (e.g. ``《「『（$``),
+       push it to the next line.
 
     Usage::
 
         breaker = KinsokuLineBreaker(max_width=900, indent=40)
-        atoms = breaker.atomize(text, measure_fn, emoji_map)
         lines = breaker.break_lines(atoms)
+        for start, end in lines:
+            draw_line(atoms[start:end])
 
-    ``lines`` is a list of (start_idx, end_idx) tuples into the atoms list.
+    ``lines`` is a list of ``(start, end)`` index pairs (end exclusive).
     """
 
     def __init__(self, max_width: float, indent: float = 0.0) -> None:
@@ -177,10 +190,16 @@ class KinsokuLineBreaker:
         self.indent = indent
         self._first_line = True
 
-    def break_lines(self, atoms: list[Atom]) -> list[tuple[int, int]]:
-        """Partition *atoms* into lines, returning (start, end) index pairs.
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        The end index is exclusive, following Python slicing convention.
+    def break_lines(self, atoms: list[Atom]) -> list[tuple[int, int]]:
+        """Partition *atoms* into kinsoku-corrected lines.
+
+        Returns:
+            List of ``(start, end)`` index pairs (end exclusive,
+            following Python slicing convention).
         """
         if not atoms:
             return []
@@ -188,60 +207,102 @@ class KinsokuLineBreaker:
         lines: list[tuple[int, int]] = []
         i = 0
         n = len(atoms)
-        line_width = self.max_width if self._first_line else self.max_width
+        line_width = self.max_width  # first line honours indent in future
         self._first_line = False
 
         while i < n:
+            # ---- 1. greedy fill ----
             j = self._fill_line(atoms, i, n, line_width)
+
+            # ---- 2. pull-back: fix forbidden line-start ----
             j = self._apply_kinsoku_pullback(atoms, i, j, n)
+
+            # ---- 3. push-forward: fix forbidden line-end ----
             j = self._apply_kinsoku_pushforward(atoms, i, j, n)
-            # Safety: if no progress, force at least one atom
+
+            # Safety valve: if corrections consumed everything, force 1 atom
             if j <= i:
                 j = i + 1
+
             lines.append((i, j))
             i = j
-            line_width = self.max_width  # subsequent lines use full width
+            line_width = self.max_width
 
         return lines
 
-    def _fill_line(self, atoms: list[Atom], start: int, n: int, max_w: float) -> int:
-        """Greedy fill: return the first index *after* the filled atoms."""
+    # ------------------------------------------------------------------
+    # Pass 1 — greedy fill
+    # ------------------------------------------------------------------
+
+    def _fill_line(
+        self, atoms: list[Atom], start: int, n: int, max_w: float
+    ) -> int:
+        """Return the index just *after* the last atom that fits in *max_w*.
+
+        Stops at MANDATORY_BREAK (``\\n``) — the break character is consumed
+        but not included in the line.
+        """
         width = 0.0
         i = start
         while i < n:
             atom = atoms[i]
             if atom.char_class == CharClass.MANDATORY_BREAK:
-                i += 1  # skip the break character
+                i += 1       # consume the newline
                 break
             if width + atom.width > max_w and width > 0:
-                break
+                break        # overflow — break before this atom
             width += atom.width
             i += 1
         return i
 
-    def _apply_kinsoku_pullback(self, atoms: list[Atom], line_start: int, break_at: int, n: int) -> int:
-        """Pull back forbidden line-start characters to the previous line.
+    # ------------------------------------------------------------------
+    # Pass 2 — kinsoku pull-back (追い出し)
+    # ------------------------------------------------------------------
 
-        If *break_at* is the first char of the next line and it's forbidden
-        at line start, move the last char(s) of the current line down.
-        Continue until the first char of the next line is allowed at line start.
+    def _apply_kinsoku_pullback(
+        self, atoms: list[Atom], line_start: int, break_at: int, n: int
+    ) -> int:
+        """Move forbidden line-start characters to the *previous* line.
+
+        When the atom at *break_at* (first of the next line) has type
+        ``CLOSE`` or ``NON_STARTER``, this method walks backward,
+        pulling the offending character(s) from the current line end
+        into the next line's beginning.
+
+        Example::
+
+            今天天气真好，       ← break_at would be after "，"
+            我想出门。           ← but "，" is forbidden at line start!
+
+        After pull-back::
+
+            今天天气真好         ← "，" pulled to next line
+            ，我想出门。
         """
         while break_at < n and break_at > line_start:
             first_of_next = atoms[break_at]
             if not self._is_forbidden_at_line_start(first_of_next):
                 break
-            # Pull the last character from the current line into the next line
             break_at -= 1
-            # If we pulled a close/non-starter before it, keep pulling
-            while break_at > line_start and self._is_forbidden_at_line_end(atoms[break_at - 1]):
+            # Continue pulling if the preceding char is forbidden at line-end.
+            # Handles chains like  "《text》"  → 《 must not end a line.
+            while break_at > line_start and self._is_forbidden_at_line_end(
+                atoms[break_at - 1]
+            ):
                 break_at -= 1
         return break_at
 
-    def _apply_kinsoku_pushforward(self, atoms: list[Atom], line_start: int, break_at: int, n: int) -> int:
-        """Push forbidden line-end characters to the next line.
+    # ------------------------------------------------------------------
+    # Pass 3 — kinsoku push-forward (追い込み)
+    # ------------------------------------------------------------------
 
-        If the last char of the current line is forbidden at line end,
-        move it to the next line.
+    def _apply_kinsoku_pushforward(
+        self, atoms: list[Atom], line_start: int, break_at: int, n: int
+    ) -> int:
+        """Push forbidden line-end characters to the *next* line.
+
+        When the atom at *break_at - 1* (last of the current line) has type
+        ``OPEN``, it is moved to the following line.
         """
         while break_at > line_start and break_at <= n:
             last_of_line = atoms[break_at - 1]
@@ -250,12 +311,27 @@ class KinsokuLineBreaker:
             break_at -= 1
         return break_at
 
+    # ------------------------------------------------------------------
+    # Kinsoku predicates
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _is_forbidden_at_line_start(atom: Atom) -> bool:
+        """Return True when *atom* must NOT appear at the start of a line.
+
+        This covers:
+        - ``CLOSE`` — closing brackets, quotes
+        - ``NON_STARTER`` — commas, periods, colons, question/exclamation marks
+        """
         return atom.char_class in (CharClass.CLOSE, CharClass.NON_STARTER)
 
     @staticmethod
     def _is_forbidden_at_line_end(atom: Atom) -> bool:
+        """Return True when *atom* must NOT appear at the end of a line.
+
+        This covers:
+        - ``OPEN`` — opening brackets, opening quotes, currency symbols
+        """
         return atom.char_class == CharClass.OPEN
 
 

@@ -12,13 +12,23 @@ from dynamicadaptor.Majors import Major, RichTextNodes
 from loguru import logger
 
 from ..config import PolyStyle
+from ..font_resolver import FontResolver
 from ..graphics import TextDrawer, fetch_images, paste, merge_pictures, draw_shadow, round_corners
 from .registry import register_major
 from .text import BiliText
 
 
 class BaseMajorRenderer:
-    """Base for majory-type renderers."""
+    """Template-method base for all major-type renderers.
+
+    Provides:
+    - Canvas helpers: ``_draw_shadow``, ``_round_corners``, ``_draw_text``
+    - Badge/tag rendering: ``_make_tag``, ``_make_sub_tag``
+    - Font resolution via :class:`FontResolver` (Chain-of-Responsibility)
+    - Background color selection via ``_bg(repost)``
+
+    Subclasses override ``run(repost)`` and return a numpy array or None.
+    """
 
     def __init__(self, src_path: str, style: PolyStyle, major: Major = None):
         self.src_path = src_path
@@ -34,6 +44,9 @@ class BaseMajorRenderer:
             style.font.font_size.text,
         )
         self._drawer = TextDrawer(style)
+        self._resolver = FontResolver(
+            style.font.font_family, style.font.font_style, style.font.emoji_font_family,
+        )
 
     async def _draw_shadow(self, pos, corner, bg_color):
         await draw_shadow(self.canvas, pos, corner, bg_color)
@@ -45,13 +58,8 @@ class BaseMajorRenderer:
         await self._drawer.draw_text(self.canvas, text, font_size, pos, font_color, font_style)
 
     async def _make_tag(self, tag: str, font_size: int):
-        font = self.text_font
-        if font.textToGlyphs(text=tag[0])[0] == 0:  # type: ignore
-            if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-                self.style.font.font_family, self.style.font.font_style,
-                ["zh", "en"], ord(tag[0]),
-            ):
-                font = skia.Font(typeface, self.style.font.font_size.text)
+        """Draw a pink badge (e.g. "直播中") at the top-right of the card."""
+        font = self._resolver.resolve(tag[0], self.text_font, font_size)
         font.setSize(font_size)
         size = font.measureText(text=tag)  # type: ignore
         surface = skia.Surface(int(size + 20), int(font.getSize() + 20))
@@ -68,13 +76,8 @@ class BaseMajorRenderer:
         await paste(self.canvas, tag_img, (1010 - tag_img.width(), 50))
 
     async def _make_sub_tag(self, text: str, font_size: int):
-        font = self.text_font
-        if font.textToGlyphs(text=text[0])[0] == 0:  # type: ignore
-            if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-                self.style.font.font_family, self.style.font.font_style,
-                ["zh", "en"], ord(text[0]),
-            ):
-                font = skia.Font(typeface, self.style.font.font_size.text)
+        """Draw a semi-transparent black overlay tag (e.g. duration)."""
+        font = self._resolver.resolve(text[0], self.text_font, font_size)
         font.setSize(font_size)
         size = font.measureText(text=text)  # type: ignore
         surface = skia.Surface(int(size + 20), int(font.getSize() + 20))

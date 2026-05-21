@@ -11,12 +11,17 @@ from dynamicadaptor.AddonCard import Additional
 from loguru import logger
 
 from ..config import PolyStyle
+from ..font_resolver import FontResolver
 from ..graphics import TextDrawer, fetch_images, paste, draw_shadow, round_corners, make_badge
 from .registry import register_additional
 
 
 class BaseAdditionalRenderer:
-    """Base for additional-card renderers."""
+    """Template-method base for additional-card renderers.
+
+    Provides canvas helpers and font resolution (via :class:`FontResolver`).
+    Subclasses override ``run(repost)``.
+    """
 
     def __init__(self, src_path: str, style: PolyStyle, additional: Additional):
         self.src_path = src_path
@@ -32,6 +37,9 @@ class BaseAdditionalRenderer:
             style.font.font_size.text,
         )
         self._drawer = TextDrawer(style)
+        self._resolver = FontResolver(
+            style.font.font_family, style.font.font_style, style.font.emoji_font_family,
+        )
 
     async def _draw_shadow(self, pos, corner, bg_color):
         await draw_shadow(self.canvas, pos, corner, bg_color)
@@ -43,12 +51,8 @@ class BaseAdditionalRenderer:
         await self._drawer.draw_text(self.canvas, text, font_size, pos, font_color, font_style)
 
     async def _make_badge(self, text, font_size, pos, img_size, text_pos):
-        font = self.text_font
-        if font.textToGlyphs(text=text[0])[0] == 0:
-            if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-                self.style.font.font_family, self.style.font.font_style, ["zh", "en"], ord(text[0]),
-            ):
-                font = skia.Font(typeface, self.style.font.font_size.text)
+        """Draw a rounded-corner badge (e.g. "预约", "去看看")."""
+        font = self._resolver.resolve(text[0], self.text_font, font_size)
         await make_badge(self.canvas, text, font, font_size,
                          self.style.color.font_color.name_big_vip, pos, img_size, text_pos)
 
