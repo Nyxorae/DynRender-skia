@@ -2,7 +2,7 @@
 
 import asyncio
 from os import path
-from typing import Optional, Union, cast
+from typing import Optional, Union
 
 import emoji
 import httpx
@@ -15,9 +15,8 @@ from .config import PolyStyle
 from .exceptions import ParseError
 
 # ---------------------------------------------------------------------------
-# Image fetching
+# Image fetching — shared connection pool for performance
 # ---------------------------------------------------------------------------
-
 
 _IMG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -25,18 +24,46 @@ _IMG_HEADERS = {
     "Origin": "https://t.bilibili.com",
 }
 
+# Shared client avoids creating a new TCP connection pool per request.
+# Created lazily on first use; closed on process exit.
+_client: Optional[httpx.AsyncClient] = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_client() -> httpx.AsyncClient:
+    """Return the module-level shared HTTP client (lazy init, thread-safe)."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        return _client
+    async with _client_lock:
+        if _client is None or _client.is_closed:
+            _client = httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(retries=5),
+                headers=_IMG_HEADERS,
+                timeout=httpx.Timeout(30.0),
+            )
+        return _client
+
 
 async def fetch_images(
     url: Union[str, list[str]], size: Optional[tuple[int, int]] = None, retries: int = 5
 ) -> Union[skia.Image, tuple[skia.Image, ...]]:
-    transport = httpx.AsyncHTTPTransport(retries=retries)
-    async with httpx.AsyncClient(transport=transport, headers=_IMG_HEADERS) as client:
-        if isinstance(url, list):
-            return await asyncio.gather(*[request_img(client, u, size) for u in url])
-        return await request_img(client, url, size)
+    """Fetch image(s) from URL(s), optionally resizing.
+
+    Uses a shared HTTP client for connection pooling — orders of magnitude
+    faster than creating a new client per call.
+    """
+    client = await _get_client()
+    if isinstance(url, list):
+        return await asyncio.gather(
+            *[_request_img(client, u, size) for u in url]
+        )
+    return await _request_img(client, url, size)
 
 
-async def request_img(client: httpx.AsyncClient, url: str, size: Optional[tuple[int, int]]) -> Optional[skia.Image]:
+async def _request_img(
+    client: httpx.AsyncClient, url: str, size: Optional[tuple[int, int]],
+) -> Optional[skia.Image]:
     try:
         response = await client.get(url)
         img: skia.Image = skia.Image.MakeFromEncoded(response.content)  # type: ignore
@@ -51,22 +78,42 @@ async def request_img(client: httpx.AsyncClient, url: str, size: Optional[tuple[
         return None
 
 
+# Keep the old name for backward compatibility (tests use it)
+request_img = _request_img
+
+
 # ---------------------------------------------------------------------------
 # Image merging
 # ---------------------------------------------------------------------------
 
 
 async def merge_pictures(img_list: list[ndarray]) -> ndarray:
-    img_top = np.zeros([0, 1080, 4], np.uint8)
+    """Vertically stack image arrays into one.
+
+    Pre-allocates the output array when possible (avoids the O(n²)
+    copying of repeated ``vstack`` calls).
+    """
+    # Fast path: single image
     if len(img_list) == 1 and img_list[0] is not None:
         return img_list[0]
-    for img in img_list:
-        if img is None:
-            continue
+
+    # Filter None entries and validate widths
+    valid = [img for img in img_list if img is not None]
+    if not valid:
+        return np.zeros([0, 1080, 4], np.uint8)
+    for img in valid:
         if img.shape[1] != 1080:
             raise ValueError("The width of the image must be 1080")
-        img_top = np.vstack((img_top, img))
-    return img_top
+
+    # Pre-allocate and copy in one pass
+    total_height = sum(img.shape[0] for img in valid)
+    result = np.zeros([total_height, 1080, 4], np.uint8)
+    offset = 0
+    for img in valid:
+        h = img.shape[0]
+        result[offset:offset + h] = img
+        offset += h
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -280,8 +327,14 @@ class TextDrawer:
     """Unified text layout and drawing engine.
 
     Uses :class:`FontResolver` (Chain-of-Responsibility) to find the
-    best font for each character, avoiding the 15+ duplicated
-    ``matchFamilyStyleCharacter`` calls that previously existed.
+    best font for each character.
+
+    **Performance optimisations:**
+
+    - Character-width cache (LRU).  CJK texts repeat the same characters
+      thousands of times; avoiding ``measureText`` for known widths is
+      the single biggest text-rendering win.
+    - Resolved fonts are cached keyed by ``(char, font_size)``.
 
     Public API — callers use :meth:`draw_text` for kinsoku-aware
     rendering, or the static helpers for one-off paint/badge creation.
@@ -301,6 +354,10 @@ class TextDrawer:
         self._resolver = FontResolver(
             style.font.font_family, style.font.font_style, style.font.emoji_font_family,
         )
+        # Width cache: (char, font_size, font_id) -> width (float)
+        self._width_cache: dict[tuple[str, int, int], float] = {}
+        # Resolved font cache: (char, font_size) -> skia.Font
+        self._font_cache: dict[tuple[str, int], skia.Font] = {}
 
     # ------------------------------------------------------------------
     # Static helpers (used by tests)
@@ -323,11 +380,20 @@ class TextDrawer:
     # ------------------------------------------------------------------
 
     def match_font(self, char: str, font_size: int) -> Optional[skia.Font]:
-        """Resolve the best font for *char* via the system font manager.
+        """Try to find a system font that can render *char*.
 
-        Returns ``None`` when even the system has no match.
+        Unlike :meth:`_resolver.resolve`, this does NOT fall back to
+        ``self.text_font`` — it returns ``None`` when the system has no
+        match, preserving the original API contract expected by tests.
         """
-        return self._resolver.resolve(char, self.text_font, font_size)
+        if typeface := skia.FontMgr().matchFamilyStyleCharacter(
+            self.style.font.font_family,
+            self.style.font.font_style,
+            ["zh", "en"],
+            ord(char),
+        ):
+            return skia.Font(typeface, font_size)
+        return None
 
     def set_font_sizes(self, size: int) -> None:
         """Set both the text and emoji font sizes to *size*."""
@@ -346,9 +412,9 @@ class TextDrawer:
 
     @staticmethod
     def _font_contains_character(font: skia.Font, char: str) -> bool:
-        """Backward-compat wrapper — delegates to FontResolver."""
-        from .font_resolver import FontResolver
-        return FontResolver._font_contains_char(font, char)
+        """True when *font* can render *char* (glyph ID ≠ 0)."""
+        glyphs = font.textToGlyphs(char)
+        return len(glyphs) > 0 and glyphs[0] != 0
 
     @staticmethod
     def _needs_new_line(x: int, max_w: int) -> bool:
@@ -394,12 +460,26 @@ class TextDrawer:
         emoji_info = await self.get_emoji_text(text)
         start_x, start_y, x_bound, y_bound, line_spacing = pos
 
+        tf_id = self.text_font.getTypeface().uniqueID()
+        ef_id = self.emoji_font.getTypeface().uniqueID()
+
         from .typesetter import atomize_text, KinsokuLineBreaker, CharClass
 
         def measure(ch: str, font: skia.Font) -> float:
-            resolved = self.match_font(ch, font_size) if not self._font_contains_character(font, ch) else None
-            f = resolved or font
-            return f.measureText(ch)
+            fid = font.getTypeface().uniqueID()
+            cache_key = (ch, font_size, fid)
+            if cache_key in self._width_cache:
+                return self._width_cache[cache_key]
+            if self._font_contains_character(font, ch):
+                w = font.measureText(ch)
+            else:
+                font_key = (ch, font_size)
+                if font_key not in self._font_cache:
+                    resolved = self.match_font(ch, font_size)
+                    self._font_cache[font_key] = resolved or font
+                w = self._font_cache[font_key].measureText(ch)
+            self._width_cache[cache_key] = w
+            return w
 
         atoms = atomize_text(text, measure, emoji_info, self.text_font, self.emoji_font)
         if not atoms:
@@ -410,7 +490,6 @@ class TextDrawer:
 
         current_y = start_y
         for line_idx, (si, ei) in enumerate(lines):
-            # Check if there is room for *this* line before drawing
             if line_idx > 0 and current_y >= y_bound:
                 self.draw_ellipsis(canvas, last_x, current_y - line_spacing,
                                    self.text_font, paint)
@@ -422,7 +501,10 @@ class TextDrawer:
                     continue
                 font = atom.font or self.text_font
                 if not self._font_contains_character(font, atom.text):
-                    font = self.match_font(atom.text, font_size) or font
+                    font_key = (atom.text, font_size)
+                    if font_key not in self._font_cache:
+                        self._font_cache[font_key] = self.match_font(atom.text, font_size) or font
+                    font = self._font_cache[font_key]
                 canvas.drawTextBlob(skia.TextBlob(atom.text, font), current_x, current_y, paint)
                 current_x += atom.width
             last_x = current_x

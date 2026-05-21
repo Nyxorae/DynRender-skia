@@ -110,8 +110,16 @@ class BiliText:
             self.image_list.append(canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType))
 
     def _collect_atoms(self, dyn_text: Text, rich_list: dict) -> list[Atom]:
-        """Convert all richtext nodes into a flat list of Atoms for line-breaking."""
+        """Convert all richtext nodes into a flat list of Atoms for line-breaking.
+
+        Uses inline font and width caches to avoid repeated ``measureText``
+        and ``matchFamilyStyleCharacter`` calls for frequently-used characters.
+        """
         atoms: list[Atom] = []
+        # Local caches (hot path — called once per render, many chars)
+        font_cache: dict[tuple[str, int], skia.Font] = {}
+        width_cache: dict[tuple[str, int, int], float] = {}
+        text_font_id = self.text_font.getTypeface().uniqueID()
 
         for node in dyn_text.rich_text_nodes:
             node_type = node.type
@@ -143,16 +151,28 @@ class BiliText:
                         char_class = CharClass.EMOJI
                     else:
                         offset += 1
-                        font = self.text_font
-                        if font.textToGlyphs(ch)[0] == 0:
-                            if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-                                self.style.font.font_family,
-                                self.style.font.font_style,
-                                ["zh", "en"], ord(ch[0]),
-                            ):
-                                font = skia.Font(typeface, self.style.font.font_size.text)
-                        w = font.measureText(ch)
-                        char_class = classify_char(ch)
+                        # Try width cache first
+                        wkey = (ch, self.style.font.font_size.text, text_font_id)
+                        if wkey in width_cache:
+                            w = width_cache[wkey]
+                            char_class = classify_char(ch)
+                            font = self.text_font
+                        else:
+                            font = self.text_font
+                            if font.textToGlyphs(ch)[0] == 0:
+                                fkey = (ch, self.style.font.font_size.text)
+                                if fkey in font_cache:
+                                    font = font_cache[fkey]
+                                elif typeface := skia.FontMgr().matchFamilyStyleCharacter(
+                                    self.style.font.font_family,
+                                    self.style.font.font_style,
+                                    ["zh", "en"], ord(ch[0]),
+                                ):
+                                    font = skia.Font(typeface, self.style.font.font_size.text)
+                                    font_cache[fkey] = font
+                            w = font.measureText(ch)
+                            char_class = classify_char(ch)
+                            width_cache[wkey] = w
                     atoms.append(Atom(ch, w, char_class, font, paint_color=color))
 
             elif node_type == "RICH_TEXT_NODE_TYPE_EMOJI":
@@ -176,17 +196,27 @@ class BiliText:
                     w = icon.dimensions().width() + 5
                     atoms.append(Atom(f"[{key}]", w, CharClass.INLINE_OBJECT,
                                       icon_image=icon, paint_color=color))
-                # Link text after icon
+                # Link text after icon (cached measurement)
                 for ch in node.text:
-                    font = self.text_font
-                    if font.textToGlyphs(ch)[0] == 0:
-                        if typeface := skia.FontMgr().matchFamilyStyleCharacter(
-                            self.style.font.font_family,
-                            self.style.font.font_style,
-                            ["zh", "en"], ord(ch),
-                        ):
-                            font = skia.Font(typeface, self.style.font.font_size.text)
-                    w = font.measureText(ch)
+                    wkey = (ch, self.style.font.font_size.text, text_font_id)
+                    if wkey in width_cache:
+                        w = width_cache[wkey]
+                        font = self.text_font
+                    else:
+                        font = self.text_font
+                        if font.textToGlyphs(ch)[0] == 0:
+                            fkey = (ch, self.style.font.font_size.text)
+                            if fkey in font_cache:
+                                font = font_cache[fkey]
+                            elif typeface := skia.FontMgr().matchFamilyStyleCharacter(
+                                self.style.font.font_family,
+                                self.style.font.font_style,
+                                ["zh", "en"], ord(ch),
+                            ):
+                                font = skia.Font(typeface, self.style.font.font_size.text)
+                                font_cache[fkey] = font
+                        w = font.measureText(ch)
+                        width_cache[wkey] = w
                     atoms.append(Atom(ch, w, classify_char(ch), font, paint_color=color))
 
         return atoms
@@ -213,6 +243,14 @@ class BiliText:
         self.emoji_dict = {name: emoji_pics[i] for i, name in enumerate(emoji_names)}
 
     async def _get_rich_pics(self, rich_list):
+        """Return a dict of icon images for the given rich-text nodes.
+
+        Icons are loaded once and cached on the instance (hot path —
+        the same icons appear in many posts).
+        """
+        if not hasattr(self, '_icon_cache'):
+            self._icon_cache: dict[str, skia.Image] = {}
+
         rich_dic = {}
         rich_size = self.style.font.font_size.text
         icon_map = {
@@ -229,7 +267,13 @@ class BiliText:
             if key == "taobao":
                 key = "goods"
             if key not in rich_dic:
-                rich_dic[key] = skia.Image.open(path.join(self.src_path, icon_name)).resize(rich_size, rich_size)
+                if key in self._icon_cache:
+                    rich_dic[key] = self._icon_cache[key]
+                else:
+                    img = skia.Image.open(path.join(self.src_path, icon_name))
+                    img = img.resize(rich_size, rich_size)
+                    self._icon_cache[key] = img
+                    rich_dic[key] = img
         return rich_dic
 
     async def _make_topic(self, topic: str) -> None:
