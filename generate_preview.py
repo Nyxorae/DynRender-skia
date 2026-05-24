@@ -10,7 +10,7 @@ from dynrender_skia.Core import DynRender
 
 
 async def main(dynamic_id: str):
-    url = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id={}'.format(dynamic_id)
+    url = 'https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id={}&features=itemOpusStyle'.format(dynamic_id)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://t.bilibili.com/",
@@ -26,9 +26,9 @@ async def main(dynamic_id: str):
         return 1
 
     # Save raw API response
-    with open(f"dynamic_{dynamic_id}.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"Raw JSON saved to dynamic_{dynamic_id}.json")
+    # with open(f"dynamic_{dynamic_id}.json", "w", encoding="utf-8") as f:
+    #     json.dump(data, f, ensure_ascii=False, indent=2)
+    # print(f"Raw JSON saved to dynamic_{dynamic_id}.json")
 
     item = data["data"]["item"]
     print(f"Dynamic type: {item.get('type')}")
