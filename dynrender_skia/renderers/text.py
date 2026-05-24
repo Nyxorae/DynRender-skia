@@ -162,7 +162,7 @@ class BiliText:
                     skia.Color(*self.style.color.font_color.rich_text) if is_rich
                     else skia.Color(*self.style.color.font_color.text)
                 )
-                text = node.text.translate(str.maketrans({"\r": ""}))
+                text = node.text.translate(str.maketrans({"\r": "", "\t": ""}))
                 emoji_info = emoji.emoji_list(text)
                 emoji_map = {e["match_start"]: [e["match_end"], e["emoji"]] for e in emoji_info}
                 total = len(text)

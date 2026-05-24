@@ -358,14 +358,13 @@ class TestTextDrawerFunction:
 
     @staticmethod
     def _mock_typesetter(atoms: list[Atom], lines: list[tuple[int, int]]):
-        """Set up mocks for atomize_text and KnuthPlassLineBreaker. Returns stop-callables."""
+        """Set up mocks for atomize_text and KinsokuLineBreaker. Returns stop-callables."""
         p_atomize = patch("dynrender_skia.typesetter.atomize_text", return_value=atoms)
-        p_breaker = patch("dynrender_skia.typesetter.KnuthPlassLineBreaker")
+        p_breaker = patch("dynrender_skia.typesetter.KinsokuLineBreaker")
         p_atomize.start()
         mock_breaker_class = p_breaker.start()
         mock_breaker = MagicMock()
-        # Convert 2-tuple lines to 3-tuples with ratio=0.0
-        mock_breaker.break_lines.return_value = [(s, e, 0.0) for s, e in lines]
+        mock_breaker.break_lines.return_value = lines
         mock_breaker_class.return_value = mock_breaker
         return p_atomize, p_breaker
 

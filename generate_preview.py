@@ -26,9 +26,9 @@ async def main(dynamic_id: str):
         return 1
 
     # Save raw API response
-    # with open(f"dynamic_{dynamic_id}.json", "w", encoding="utf-8") as f:
-    #     json.dump(data, f, ensure_ascii=False, indent=2)
-    # print(f"Raw JSON saved to dynamic_{dynamic_id}.json")
+    with open(f"dynamic_{dynamic_id}.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Raw JSON saved to dynamic_{dynamic_id}.json")
 
     item = data["data"]["item"]
     print(f"Dynamic type: {item.get('type')}")

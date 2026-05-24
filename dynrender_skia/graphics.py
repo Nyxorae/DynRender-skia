@@ -482,7 +482,7 @@ class TextDrawer:
         tf_id = self.text_font.getTypeface().uniqueID()
         ef_id = self.emoji_font.getTypeface().uniqueID()
 
-        from .typesetter import atomize_text, KnuthPlassLineBreaker, CharClass
+        from .typesetter import atomize_text, KinsokuLineBreaker, CharClass
 
         def measure(ch: str, font: skia.Font) -> float:
             fid = font.getTypeface().uniqueID()
@@ -505,28 +505,18 @@ class TextDrawer:
             return
 
         max_w = x_bound - start_x
-        stretch_sp = font_size * 0.25
-        shrink_sp = font_size * 0.125
-        breaker = KnuthPlassLineBreaker(
-            max_width=max_w, indent=0,
-            stretch_spacing=stretch_sp, shrink_spacing=shrink_sp,
-        )
+        breaker = KinsokuLineBreaker(max_width=max_w, indent=0)
         lines = breaker.break_lines(atoms)
 
         current_y = start_y
-        for line_idx, (si, ei, ratio) in enumerate(lines):
-            if line_idx > 0 and current_y >= y_bound:
-                self.draw_ellipsis(canvas, last_x, current_y - line_spacing,
-                                   self.text_font, paint)
-                break
+        ellipsis_w = self.text_font.measureText("...")
+
+        for line_idx, (si, ei) in enumerate(lines):
+            # If the next line would overflow y_bound, this line is the
+            # last visible one — leave room for the ellipsis.
+            last_visible = current_y + line_spacing >= y_bound
+
             current_x = start_x
-            n_atoms = ei - si
-            # Compute extra spacing between atoms for justified alignment
-            extra_per_gap = 0.0
-            if ratio > 0 and n_atoms > 1:
-                extra_per_gap = ratio * stretch_sp
-            elif ratio < 0 and n_atoms > 1:
-                extra_per_gap = ratio * shrink_sp
             for k in range(si, ei):
                 atom = atoms[k]
                 if atom.char_class == CharClass.MANDATORY_BREAK:
@@ -546,11 +536,28 @@ class TextDrawer:
                         # HarfBuzz shaping to combine modifiers with base emoji
                         blob = skia.TextBlob.MakeFromShapedText(atom.text, font)
                         canvas.drawTextBlob(blob, current_x, current_y, paint)
-                        current_x += atom.width + extra_per_gap
+                        current_x += atom.width
+                        # Last-visible check after advancing x
+                        if last_visible and current_x + ellipsis_w > x_bound:
+                            self.draw_ellipsis(canvas, current_x, current_y,
+                                               self.text_font, paint)
+                            return
                         continue
                 if blob is None:
                     blob = skia.TextBlob(draw_text, font)
+                next_x = current_x + atom.width
+                if last_visible and next_x + ellipsis_w > x_bound:
+                    self.draw_ellipsis(canvas, current_x, current_y,
+                                       self.text_font, paint)
+                    return
                 canvas.drawTextBlob(blob, current_x, current_y, paint)
-                current_x += atom.width + extra_per_gap
-            last_x = current_x
+                current_x = next_x
+
+            if last_visible:
+                # Only draw ellipsis if more lines exist below that won't fit
+                if line_idx < len(lines) - 1:
+                    ex = min(current_x, x_bound - ellipsis_w)
+                    self.draw_ellipsis(canvas, ex, current_y,
+                                       self.text_font, paint)
+                return
             current_y += line_spacing

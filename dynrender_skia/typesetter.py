@@ -404,31 +404,44 @@ class KnuthPlassLineBreaker:
         if n == 0:
             return []
 
-        # Split into segments at mandatory-break boundaries so each
-        # segment (paragraph) is independently optimised.
-        # \\n atoms are paragraph separators — they do not produce
-        # rendered lines themselves.
-        segments: list[tuple[int, int]] = []  # (start, end) in atoms
+        # Split into segments at mandatory-break boundaries.
+        # Single \\n = paragraph break (no extra blank line).
+        # Each additional consecutive \\n = one blank line.
+        items: list[tuple[str, int, int]] = []  # ('text'|'blank', start, end)
+
         seg_start = 0
-        for i, atom in enumerate(atoms):
-            if atom.char_class == CharClass.MANDATORY_BREAK:
-                if i > seg_start:
-                    segments.append((seg_start, i))
-                # \\n itself is not added — it just separates paragraphs
-                seg_start = i + 1
+        idx = 0
+        while idx < n:
+            if atoms[idx].char_class == CharClass.MANDATORY_BREAK:
+                if idx > seg_start:
+                    items.append(('text', seg_start, idx))
+                # Count consecutive \\n's
+                nl_count = 1
+                while (
+                    idx + nl_count < n
+                    and atoms[idx + nl_count].char_class == CharClass.MANDATORY_BREAK
+                ):
+                    nl_count += 1
+                # Extra \\n's → blank lines (si==ei → no atoms drawn, just y advance)
+                for _ in range(nl_count - 1):
+                    items.append(('blank', idx, idx))
+                seg_start = idx + nl_count
+                idx = seg_start
+            else:
+                idx += 1
         if seg_start < n:
-            segments.append((seg_start, n))
+            items.append(('text', seg_start, n))
 
         all_lines: list[tuple[int, int, float]] = []
-        for seg_start, seg_end in segments:
-            seg_lines = self._break_segment(atoms, seg_start, seg_end)
-            if seg_lines:
-                all_lines.extend(seg_lines)
+        for kind, si, ei in items:
+            if kind == 'blank':
+                all_lines.append((si, ei, 0.0))
             else:
-                # DP failed — fall back to greedy for this segment
-                all_lines.extend(
-                    self._fallback_segment(atoms, seg_start, seg_end)
-                )
+                seg_lines = self._break_segment(atoms, si, ei)
+                if seg_lines:
+                    all_lines.extend(seg_lines)
+                else:
+                    all_lines.extend(self._fallback_segment(atoms, si, ei))
 
         return all_lines
 
@@ -493,15 +506,19 @@ class KnuthPlassLineBreaker:
 
                 line_w = self.max_width
 
-                # Last line of a paragraph: always natural width.
-                # Stretching the final line is a typographic sin.
+                # Last line of a paragraph: don't stretch, but DO shrink
+                # if it would otherwise overflow.
                 if end == m:
-                    if natural_w > line_w and total_shrink > 0:
-                        r = (line_w - natural_w) / total_shrink
-                        if r < -1.0:
-                            continue  # overfull, even at max shrink
-                    ratio = 0.0
-                    badness = 0.0
+                    if natural_w > line_w:
+                        if total_shrink > 0:
+                            ratio = (line_w - natural_w) / total_shrink
+                            if ratio < -1.0:
+                                continue  # overfull even at max shrink
+                        else:
+                            continue  # overfull, no shrink available
+                    else:
+                        ratio = 0.0  # underfull last line — natural width
+                    badness = 100.0 * abs(ratio) ** 3
                     penalty = 0.0
                 else:
                     ratio = 0.0
@@ -599,6 +616,7 @@ def atomize_text(
         if offset in emoji_map:
             end_pos, emoji_char = emoji_map[offset]
             offset = end_pos
+            font = emoji_font
             # Zero-width emoji modifiers (FE0F/FE0E variation selectors,
             # U+1F3FB-U+1F3FF skin tones) — keep them in the atom for
             # correct combined rendering, but measure only the base char.
