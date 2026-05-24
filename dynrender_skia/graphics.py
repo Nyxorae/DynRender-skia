@@ -87,34 +87,55 @@ request_img = _request_img
 # ---------------------------------------------------------------------------
 
 
-async def merge_pictures(img_list: list[ndarray]) -> ndarray:
-    """Vertically stack image arrays into one.
+# async def merge_pictures(img_list: list[ndarray]) -> ndarray:
+#     """Vertically stack image arrays into one.
 
-    Pre-allocates the output array when possible (avoids the O(n²)
-    copying of repeated ``vstack`` calls).
-    """
-    # Fast path: single image
+#     Pre-allocates the output array when possible (avoids the O(n²)
+#     copying of repeated ``vstack`` calls).
+#     """
+#     # Fast path: single image
+#     if len(img_list) == 1 and img_list[0] is not None:
+#         return img_list[0]
+
+#     # Filter None entries and validate widths
+#     valid = [img for img in img_list if img is not None]
+#     if not valid:
+#         return np.zeros([0, 1080, 4], np.uint8)
+#     for img in valid:
+#         if img.shape[1] != 1080:
+#             raise ValueError("The width of the image must be 1080")
+
+#     # Pre-allocate and copy in one pass
+#     total_height = sum(img.shape[0] for img in valid)
+#     result = np.zeros([total_height, 1080, 4], np.uint8)
+#     offset = 0
+#     for img in valid:
+#         h = img.shape[0]
+#         result[offset:offset + h] = img
+#         offset += h
+#     return result
+
+async def merge_pictures(img_list: list[ndarray]) -> ndarray:
+    """Vertically stack image arrays into one."""
+    # 保留原始行为：单元素列表且非 None 直接返回（不做复制，也不检查宽度）
     if len(img_list) == 1 and img_list[0] is not None:
         return img_list[0]
 
-    # Filter None entries and validate widths
-    valid = [img for img in img_list if img is not None]
-    if not valid:
-        return np.zeros([0, 1080, 4], np.uint8)
-    for img in valid:
+    # 一次遍历：过滤 None、检查宽度、收集有效图像
+    valid = []
+    for img in img_list:
+        if img is None:
+            continue
         if img.shape[1] != 1080:
             raise ValueError("The width of the image must be 1080")
+        valid.append(img)
 
-    # Pre-allocate and copy in one pass
-    total_height = sum(img.shape[0] for img in valid)
-    result = np.zeros([total_height, 1080, 4], np.uint8)
-    offset = 0
-    for img in valid:
-        h = img.shape[0]
-        result[offset:offset + h] = img
-        offset += h
-    return result
+    if not valid:
+        return np.zeros([0, 1080, 4], dtype=np.uint8)
 
+    # 如果只剩下一个有效图像（且原列表不只一个元素），为保持原行为仍做拷贝
+    # 用 concatenate 一次性拼接，内部自动预分配 + 拷贝
+    return np.concatenate(valid, axis=0)
 
 # ---------------------------------------------------------------------------
 # Canvas paste
@@ -461,7 +482,7 @@ class TextDrawer:
         tf_id = self.text_font.getTypeface().uniqueID()
         ef_id = self.emoji_font.getTypeface().uniqueID()
 
-        from .typesetter import atomize_text, KinsokuLineBreaker, CharClass
+        from .typesetter import atomize_text, KnuthPlassLineBreaker, CharClass
 
         def measure(ch: str, font: skia.Font) -> float:
             fid = font.getTypeface().uniqueID()
@@ -483,16 +504,29 @@ class TextDrawer:
         if not atoms:
             return
 
-        breaker = KinsokuLineBreaker(max_width=x_bound - start_x, indent=0)
+        max_w = x_bound - start_x
+        stretch_sp = font_size * 0.25
+        shrink_sp = font_size * 0.125
+        breaker = KnuthPlassLineBreaker(
+            max_width=max_w, indent=0,
+            stretch_spacing=stretch_sp, shrink_spacing=shrink_sp,
+        )
         lines = breaker.break_lines(atoms)
 
         current_y = start_y
-        for line_idx, (si, ei) in enumerate(lines):
+        for line_idx, (si, ei, ratio) in enumerate(lines):
             if line_idx > 0 and current_y >= y_bound:
                 self.draw_ellipsis(canvas, last_x, current_y - line_spacing,
                                    self.text_font, paint)
                 break
             current_x = start_x
+            n_atoms = ei - si
+            # Compute extra spacing between atoms for justified alignment
+            extra_per_gap = 0.0
+            if ratio > 0 and n_atoms > 1:
+                extra_per_gap = ratio * stretch_sp
+            elif ratio < 0 and n_atoms > 1:
+                extra_per_gap = ratio * shrink_sp
             for k in range(si, ei):
                 atom = atoms[k]
                 if atom.char_class == CharClass.MANDATORY_BREAK:
@@ -512,11 +546,11 @@ class TextDrawer:
                         # HarfBuzz shaping to combine modifiers with base emoji
                         blob = skia.TextBlob.MakeFromShapedText(atom.text, font)
                         canvas.drawTextBlob(blob, current_x, current_y, paint)
-                        current_x += atom.width
+                        current_x += atom.width + extra_per_gap
                         continue
                 if blob is None:
                     blob = skia.TextBlob(draw_text, font)
                 canvas.drawTextBlob(blob, current_x, current_y, paint)
-                current_x += atom.width
+                current_x += atom.width + extra_per_gap
             last_x = current_x
             current_y += line_spacing

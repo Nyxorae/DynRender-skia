@@ -4,6 +4,7 @@ Implements algorithms from:
 - W3C JLREQ (Japanese Layout Requirements)
 - GB/T 15834-2011 (Chinese Punctuation Usage)
 - Unicode UAX #14 (Line Breaking Algorithm)
+- Knuth-Plass optimal line breaking (TeX's algorithm)
 
 Core rule: punctuation must never appear at the start of a line unless
 it's opening punctuation, and opening punctuation must never appear at
@@ -337,6 +338,227 @@ class KinsokuLineBreaker:
         - ``OPEN`` — opening brackets, opening quotes, currency symbols
         """
         return atom.char_class == CharClass.OPEN
+
+
+# ---------------------------------------------------------------------------
+# Knuth-Plass optimal line breaker
+# ---------------------------------------------------------------------------
+
+
+class KnuthPlassLineBreaker:
+    """Knuth-Plass optimal line-breaking with Kinsoku constraints.
+
+    Uses dynamic programming to find globally optimal line breaks that
+    produce even inter-character spacing across the entire paragraph.
+
+    The algorithm minimises total "demerits" — a function of individual
+    line badness (from stretching/shrinking) and breakpoint penalties
+    (Kinsoku-forbidden breaks get effectively infinite penalty).
+
+    Parameters:
+        max_width: Available width per line in pixels.
+        indent: First-line indent in pixels (currently unused).
+        stretch_spacing: Max extra space per inter-character gap when
+            stretching (pixels).  Default 10 px ≈ 0.25 em at 40 px.
+        shrink_spacing: Max reduced space per gap when shrinking (pixels).
+            Default 5 px ≈ 0.125 em at 40 px.
+        tolerance: Maximum stretch ratio before a line is considered
+            too loose.  1.0 means gaps can at most double.
+
+    Returns from ``break_lines()``:
+        ``list[tuple[int, int, float]]`` — each tuple is
+        ``(start_index, end_index, adjustment_ratio)``.  The ratio tells
+        the renderer::
+
+             ratio > 0  →  stretch each gap by ratio * stretch_spacing
+             ratio < 0  →  shrink each gap by ratio * shrink_spacing
+             ratio ≈ 0  →  natural width (no adjustment needed)
+    """
+
+    def __init__(
+        self,
+        max_width: float,
+        indent: float = 0.0,
+        stretch_spacing: float = 10.0,
+        shrink_spacing: float = 5.0,
+        tolerance: float = 1.0,
+    ) -> None:
+        self.max_width = max_width
+        self.indent = indent
+        self.stretch_spacing = stretch_spacing
+        self.shrink_spacing = shrink_spacing
+        self.tolerance = tolerance
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def break_lines(self, atoms: list[Atom]) -> list[tuple[int, int, float]]:
+        """Partition *atoms* into optimally-broken lines.
+
+        Returns:
+            List of ``(start, end, adjustment_ratio)`` tuples
+            (end exclusive, ratio is 0.0 for natural-width lines).
+        """
+        n = len(atoms)
+        if n == 0:
+            return []
+
+        # Split into segments at mandatory-break boundaries so each
+        # segment (paragraph) is independently optimised.
+        # \\n atoms are paragraph separators — they do not produce
+        # rendered lines themselves.
+        segments: list[tuple[int, int]] = []  # (start, end) in atoms
+        seg_start = 0
+        for i, atom in enumerate(atoms):
+            if atom.char_class == CharClass.MANDATORY_BREAK:
+                if i > seg_start:
+                    segments.append((seg_start, i))
+                # \\n itself is not added — it just separates paragraphs
+                seg_start = i + 1
+        if seg_start < n:
+            segments.append((seg_start, n))
+
+        all_lines: list[tuple[int, int, float]] = []
+        for seg_start, seg_end in segments:
+            seg_lines = self._break_segment(atoms, seg_start, seg_end)
+            if seg_lines:
+                all_lines.extend(seg_lines)
+            else:
+                # DP failed — fall back to greedy for this segment
+                all_lines.extend(
+                    self._fallback_segment(atoms, seg_start, seg_end)
+                )
+
+        return all_lines
+
+    # ------------------------------------------------------------------
+    # Per-segment DP
+    # ------------------------------------------------------------------
+
+    def _break_segment(
+        self, atoms: list[Atom], seg_start: int, seg_end: int
+    ) -> list[tuple[int, int, float]]:
+        """Run Knuth-Plass DP on atoms[seg_start:seg_end] (no newlines)."""
+        m = seg_end - seg_start
+        if m == 0:
+            return []
+        if m == 1:
+            return [(seg_start, seg_end, 0.0)]
+
+        # Build valid-break array for this segment.
+        # can_break[k] = can we break BEFORE atoms[seg_start + k]?
+        can_break = [False] * (m + 1)
+        can_break[0] = True  # segment start
+        can_break[m] = True  # segment end
+
+        for k in range(1, m):
+            prev = atoms[seg_start + k - 1]
+            nxt = atoms[seg_start + k]
+            if nxt.char_class in (CharClass.CLOSE, CharClass.NON_STARTER):
+                can_break[k] = False
+            elif prev.char_class == CharClass.OPEN:
+                can_break[k] = False
+            else:
+                can_break[k] = True
+
+        # Prefix sums for fast width/stretch/shrink queries
+        # widths[k] = sum of atoms[seg_start:seg_start+k] widths
+        widths = [0.0] * (m + 1)
+        for k in range(m):
+            widths[k + 1] = widths[k] + atoms[seg_start + k].width
+
+        INF = float("inf")
+        best_demerits = [INF] * (m + 1)
+        best_prev = [-1] * (m + 1)
+        best_ratio = [0.0] * (m + 1)
+        best_demerits[0] = 0.0
+
+        stretch_sp = self.stretch_spacing
+        shrink_sp = self.shrink_spacing
+
+        for end in range(1, m + 1):
+            if not can_break[end]:
+                continue
+
+            for start in range(end - 1, -1, -1):
+                if not can_break[start]:
+                    continue
+
+                natural_w = widths[end] - widths[start]
+                gap_count = end - start  # inter-atom gaps incl. final glue
+
+                total_stretch = gap_count * stretch_sp
+                total_shrink = gap_count * shrink_sp
+
+                line_w = self.max_width
+
+                # Last line of a paragraph: always natural width.
+                # Stretching the final line is a typographic sin.
+                if end == m:
+                    if natural_w > line_w and total_shrink > 0:
+                        r = (line_w - natural_w) / total_shrink
+                        if r < -1.0:
+                            continue  # overfull, even at max shrink
+                    ratio = 0.0
+                    badness = 0.0
+                    penalty = 0.0
+                else:
+                    ratio = 0.0
+                    badness = 0.0
+                    penalty = 0.0
+
+                    if natural_w < line_w:
+                        if total_stretch > 0:
+                            ratio = (line_w - natural_w) / total_stretch
+                            if ratio > self.tolerance:
+                                continue  # too loose
+                    elif natural_w > line_w:
+                        if total_shrink > 0:
+                            ratio = (line_w - natural_w) / total_shrink
+                            if ratio < -1.0:
+                                continue  # overfull (can't shrink enough)
+
+                    badness = 100.0 * abs(ratio) ** 3
+
+                if penalty >= 0:
+                    demerits = (1.0 + badness + penalty) ** 2 + best_demerits[start]
+                else:
+                    demerits = (1.0 + badness) ** 2 - penalty ** 2 + best_demerits[start]
+
+                if demerits < best_demerits[end]:
+                    best_demerits[end] = demerits
+                    best_prev[end] = start
+                    best_ratio[end] = ratio
+
+        # Backtrack
+        if best_demerits[m] >= INF:
+            return []  # signal failure to caller
+
+        lines: list[tuple[int, int, float]] = []
+        end = m
+        while end > 0:
+            start = best_prev[end]
+            if start < 0:
+                return []  # corrupt path — should not happen
+            ratio = best_ratio[end]
+            lines.append((seg_start + start, seg_start + end, ratio))
+            end = start
+        lines.reverse()
+        return lines
+
+    # ------------------------------------------------------------------
+    # Fallback
+    # ------------------------------------------------------------------
+
+    def _fallback_segment(
+        self, atoms: list[Atom], seg_start: int, seg_end: int
+    ) -> list[tuple[int, int, float]]:
+        """Greedy fallback when DP fails on a segment."""
+        breaker = KinsokuLineBreaker(self.max_width, self.indent)
+        segment_atoms = atoms[seg_start:seg_end]
+        raw = breaker.break_lines(segment_atoms)
+        return [(seg_start + s, seg_start + e, 0.0) for s, e in raw]
 
 
 # ---------------------------------------------------------------------------

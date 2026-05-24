@@ -11,7 +11,7 @@ from dynamicadaptor.Content import Text
 
 from ..config import PolyStyle
 from ..graphics import TextDrawer, fetch_images, paste, merge_pictures
-from ..typesetter import Atom, CharClass, KinsokuLineBreaker, classify_char
+from ..typesetter import Atom, CharClass, KnuthPlassLineBreaker, classify_char
 
 
 class BiliText:
@@ -76,14 +76,27 @@ class BiliText:
         if not atoms:
             return
 
-        breaker = KinsokuLineBreaker(max_width=self.x_bound - self.start_x, indent=0)
+        max_w = self.x_bound - self.start_x
+        fs = self.style.font.font_size.text
+        stretch_sp = fs * 0.25
+        shrink_sp = fs * 0.125
+        breaker = KnuthPlassLineBreaker(
+            max_width=max_w, indent=0,
+            stretch_spacing=stretch_sp, shrink_spacing=shrink_sp,
+        )
         lines = breaker.break_lines(atoms)
 
-        for line_idx, (si, ei) in enumerate(lines):
+        for line_idx, (si, ei, ratio) in enumerate(lines):
             surface = skia.Surface(1080, self.line_spacing + 10)
             canvas = surface.getCanvas()
             canvas.clear(skia.Color(*self.bg_color))
             x = self.start_x
+            n_atoms = ei - si
+            extra_per_gap = 0.0
+            if ratio > 0 and n_atoms > 1:
+                extra_per_gap = ratio * stretch_sp
+            elif ratio < 0 and n_atoms > 1:
+                extra_per_gap = ratio * shrink_sp
             for k in range(si, ei):
                 atom = atoms[k]
                 if atom.char_class == CharClass.MANDATORY_BREAK:
@@ -91,7 +104,7 @@ class BiliText:
                 if atom.icon_image is not None:
                     icon = atom.icon_image
                     await paste(canvas, icon, (int(x), int(60 - icon.dimensions().height()) / 2))
-                    x += atom.width
+                    x += atom.width + extra_per_gap
                     continue
                 color = atom.paint_color or skia.Color(*self.style.color.font_color.text)
                 paint = skia.Paint(AntiAlias=True, Color=color)
@@ -116,7 +129,7 @@ class BiliText:
                         # coordinate convention than plain TextBlob.
                         blob = skia.TextBlob.MakeFromShapedText(atom.text, font)
                         canvas.drawTextBlob(blob, x, 5, paint)
-                        x += atom.width
+                        x += atom.width + extra_per_gap
                         continue
                 blob = skia.TextBlob(draw_text, font)
                 canvas.drawTextBlob(
@@ -124,7 +137,7 @@ class BiliText:
                     int(60 - (60 - self.style.font.font_size.text) / 2),
                     paint,
                 )
-                x += atom.width
+                x += atom.width + extra_per_gap
             self.image_list.append(canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType))
 
     def _collect_atoms(self, dyn_text: Text, rich_list: dict) -> list[Atom]:
