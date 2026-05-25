@@ -357,10 +357,10 @@ class TestTextDrawerFunction:
         return atoms
 
     @staticmethod
-    def _mock_typesetter(atoms: list[Atom], lines: list[tuple[int, int]]):
-        """Set up mocks for atomize_text and KinsokuLineBreaker. Returns stop-callables."""
+    def _mock_typesetter(atoms: list[Atom], lines: list[tuple[int, int, float]]):
+        """Set up mocks for atomize_text and KnuthPlassLineBreaker. Returns stop-callables."""
         p_atomize = patch("dynrender_skia.typesetter.atomize_text", return_value=atoms)
-        p_breaker = patch("dynrender_skia.typesetter.KinsokuLineBreaker")
+        p_breaker = patch("dynrender_skia.typesetter.KnuthPlassLineBreaker")
         p_atomize.start()
         mock_breaker_class = p_breaker.start()
         mock_breaker = MagicMock()
@@ -371,7 +371,7 @@ class TestTextDrawerFunction:
     async def test_draw_text(self):
         await self.async_setup()
         atoms = self._make_atoms(self.text)
-        p1, p2 = self._mock_typesetter(atoms, [(0, len(atoms))])
+        p1, p2 = self._mock_typesetter(atoms, [(0, len(atoms), 0.0)])
 
         try:
             await self.draw_text_instance.draw_text(
@@ -391,7 +391,7 @@ class TestTextDrawerFunction:
         await self.async_setup(text="Hello,\nworld!")
         atoms = self._make_atoms(self.text)
         # Two lines: first ends before \n, second starts after \n
-        lines = [(0, 6), (7, len(atoms))]
+        lines = [(0, 6, 0.0), (7, len(atoms), 0.0)]
         p1, p2 = self._mock_typesetter(atoms, lines)
 
         try:
@@ -417,7 +417,7 @@ class TestTextDrawerFunction:
             Atom(text=" ", width=10.0, char_class=CharClass.SPACE),
             Atom(text="🌍", width=50.0, char_class=CharClass.EMOJI),
         ]
-        p1, p2 = self._mock_typesetter(atoms, [(0, len(atoms))])
+        p1, p2 = self._mock_typesetter(atoms, [(0, len(atoms), 0.0)])
 
         try:
             await self.draw_text_instance.draw_text(
@@ -434,7 +434,7 @@ class TestTextDrawerFunction:
         await self.async_setup()
         atoms = self._make_atoms(self.text)
         # Two lines to trigger wrapping
-        lines = [(0, 5), (5, len(atoms))]
+        lines = [(0, 5, 0.0), (5, len(atoms), 0.0)]
         p1, p2 = self._mock_typesetter(atoms, lines)
 
         try:
@@ -453,7 +453,7 @@ class TestTextDrawerFunction:
         atoms = self._make_atoms(self.text)
         # y_bound=30, line_spacing=20: after first line current_y goes 20→40 >= 30 → ellipsis
         self.position_and_bounds = (10, 20, 200, 30, 20)
-        lines = [(0, 4), (4, len(atoms))]
+        lines = [(0, 4, 0.0), (4, len(atoms), 0.0)]
         p1, p2 = self._mock_typesetter(atoms, lines)
 
         try:

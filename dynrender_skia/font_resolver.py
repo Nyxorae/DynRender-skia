@@ -61,12 +61,32 @@ class FontResolver:
 
         ``textToGlyphs`` returns a list of glyph IDs (one per codepoint).
         A glyph ID of 0 means the font has no glyph for that codepoint.
+
+        Returns ``False`` on any Skia error (malformed font, etc.) rather
+        than letting the exception propagate.
         """
-        glyphs = font.textToGlyphs(char)
-        return len(glyphs) > 0 and glyphs[0] != 0
+        try:
+            glyphs = font.textToGlyphs(char)
+            return len(glyphs) > 0 and glyphs[0] != 0
+        except Exception:
+            from loguru import logger
+
+            logger.opt(exception=True).warning(
+                "FontResolver._font_contains_char failed for char={!r}", char,
+            )
+            return False
 
     def _cached_font(self, typeface: skia.Typeface, font_size: int) -> skia.Font:
         key = (typeface.uniqueID(), font_size)
         if key not in self._font_cache:
-            self._font_cache[key] = skia.Font(typeface, font_size)
+            try:
+                self._font_cache[key] = skia.Font(typeface, font_size)
+            except Exception:
+                from loguru import logger
+
+                logger.opt(exception=True).warning(
+                    "FontResolver._cached_font failed to create skia.Font "
+                    "for typeface_id={}, size={}", typeface.uniqueID(), font_size,
+                )
+                raise
         return self._font_cache[key]

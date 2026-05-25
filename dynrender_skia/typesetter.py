@@ -42,17 +42,16 @@ class CharClass(Enum):
     INLINE_OBJECT = auto()
     # Explicit mandatory break (\\n)
     MANDATORY_BREAK = auto()
-    # Middle dot, en-dash — can break before/after but prefers not to separate
+    # Middle dot, en-dash, URL separator — can break before/after but prefers not to separate
     HYPHEN = auto()
 
 
 # ---------------------------------------------------------------------------
-# Unicode-based character classification
+# Kinsoku configuration — makes forbidden sets and penalties externally configurable
 # ---------------------------------------------------------------------------
 
-# Characters that MUST NOT appear at the start of a line
-# CL (Close Punctuation) + NS (Non-Starter) per UAX #14 + GB/T 15834
-_FORBIDDEN_LINE_START: set[str] = {
+# Default forbidden-start characters (CLOSE + NON_STARTER per UAX #14 + GB/T 15834)
+_DEFAULT_FORBIDDEN_START: set[str] = {
     # Close brackets — CJK and western
     ")", "】", "〕", "］", "」", "』", "》", "〉", "）",
     # Close quotes
@@ -74,9 +73,7 @@ _FORBIDDEN_LINE_START: set[str] = {
     "ㇵ", "ㇶ",
 }
 
-# Characters that MUST NOT appear at the end of a line
-# OP (Open Punctuation) per UAX #14
-_FORBIDDEN_LINE_END: set[str] = {
+_DEFAULT_FORBIDDEN_END: set[str] = {
     # Open brackets — CJK and western
     "(", "【", "〔", "［", "「", "『", "《", "〈", "（",
     # Open quotes
@@ -84,6 +81,43 @@ _FORBIDDEN_LINE_END: set[str] = {
     # Currency symbols that precede numbers
     "$", "￥", "£", "¥",
 }
+
+_DEFAULT_HYPHEN_CHARS: set[str] = {"-", "‐", "‑", "‒", "–", "—", "―"}
+
+# URL / path separators — breakable so long URLs don't overflow
+_DEFAULT_BREAKABLE_SYMBOLS: set[str] = {"/", "_", "&", "=", "~", "+"}
+
+
+@dataclass
+class KinsokuConfig:
+    """Configurable kinsoku (禁則処理) rules and break-penalty parameters.
+
+    All fields have defaults matching the CJK standard rules.  Pass an
+    instance to ``KinsokuLineBreaker`` or ``KnuthPlassLineBreaker`` to
+    customise behaviour for a specific platform or language variant.
+
+    Attributes:
+        forbidden_start: Characters that MUST NOT appear at line-start.
+        forbidden_end: Characters that MUST NOT appear at line-end.
+        breakable_symbols: URL/path separators where breaking is preferred
+            over mid-word.  Classified as ``HYPHEN``.
+        max_push_distance: Max characters to push-forward (追い込み).
+        max_pull_distance: Max characters to pull-back (追い出し).
+        penalty_mid_word: Penalty for breaking between two ALPHABETIC chars
+            (discouraged but allowed for overflow).
+        penalty_hyphen: Penalty for breaking at a HYPHEN / breakable symbol.
+        penalty_sentence_end: Penalty for breaking after sentence-ending
+            NON_STARTER punctuation (negative = preferred).
+    """
+
+    forbidden_start: set[str] = field(default_factory=lambda: _DEFAULT_FORBIDDEN_START.copy())
+    forbidden_end: set[str] = field(default_factory=lambda: _DEFAULT_FORBIDDEN_END.copy())
+    breakable_symbols: set[str] = field(default_factory=lambda: _DEFAULT_BREAKABLE_SYMBOLS.copy())
+    max_push_distance: int = 3
+    max_pull_distance: int = 3
+    penalty_mid_word: float = 50.0
+    penalty_hyphen: float = 10.0
+    penalty_sentence_end: float = 0.0
 
 # Characters that form inseparable pairs with following characters
 _INSEPARABLE_BEFORE: set[str] = {"—", "―", "…", "……"}
@@ -111,22 +145,38 @@ def _is_cjk(cp: int) -> bool:
     return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
 
 
-def classify_char(ch: str) -> CharClass:
+# Non-starter subset (punctuation that is NON_STARTER, not CLOSE)
+_NON_STARTER_SUBSET: set[str] = {
+    ",", ".", "。", "、", "，", "．", "；", "：", "?", "!", "！", "？",
+    "…", "％", "%",
+}
+
+
+def classify_char(ch: str, config: Optional[KinsokuConfig] = None) -> CharClass:
     """Classify a character (or compound emoji) for line-breaking purposes.
 
     Multi-character strings (emoji + variation selector) are classified
     by their first code-point only.
+
+    Args:
+        ch: The character (or multi-codepoint grapheme) to classify.
+        config: Optional KinsokuConfig for custom forbidden sets and
+            breakable symbols.  When None, uses the built-in defaults.
     """
-    if ch in _FORBIDDEN_LINE_START:
-        return CharClass.NON_STARTER if ch in ",.，。、;；:：?!！？、。，．：；！？…%％" else CharClass.CLOSE
-    if ch in _FORBIDDEN_LINE_END:
+    f_start = config.forbidden_start if config else _DEFAULT_FORBIDDEN_START
+    f_end = config.forbidden_end if config else _DEFAULT_FORBIDDEN_END
+    breakable = config.breakable_symbols if config else _DEFAULT_BREAKABLE_SYMBOLS
+
+    if ch in f_start:
+        return CharClass.NON_STARTER if ch in _NON_STARTER_SUBSET else CharClass.CLOSE
+    if ch in f_end:
         return CharClass.OPEN
     cp = ord(ch)
     if _is_cjk(cp):
         return CharClass.IDEOGRAPH
     if ch.isspace():
         return CharClass.SPACE
-    if ch in ("-", "‐", "‑", "‒", "–", "—", "―"):
+    if ch in _DEFAULT_HYPHEN_CHARS or ch in breakable:
         return CharClass.HYPHEN
     if ch in _INSEPARABLE_BEFORE:
         return CharClass.NON_STARTER
@@ -190,9 +240,15 @@ class KinsokuLineBreaker:
     ``lines`` is a list of ``(start, end)`` index pairs (end exclusive).
     """
 
-    def __init__(self, max_width: float, indent: float = 0.0) -> None:
+    def __init__(
+        self,
+        max_width: float,
+        indent: float = 0.0,
+        config: Optional[KinsokuConfig] = None,
+    ) -> None:
         self.max_width = max_width
         self.indent = indent
+        self.config = config or KinsokuConfig()
         self._first_line = True
 
     # ------------------------------------------------------------------
@@ -244,8 +300,10 @@ class KinsokuLineBreaker:
     ) -> int:
         """Return the index just *after* the last atom that fits in *max_w*.
 
-        Stops at MANDATORY_BREAK (``\\n``) — the break character is consumed
-        but not included in the line.
+        When overflow occurs inside an ASCII word, walks backward to the
+        last space or hyphen for a more readable break.  Stops at
+        MANDATORY_BREAK (``\\n``) — the break character is consumed but
+        not included in the line.
         """
         width = 0.0
         i = start
@@ -255,6 +313,18 @@ class KinsokuLineBreaker:
                 i += 1       # consume the newline
                 break
             if width + atom.width > max_w and width > 0:
+                # Overflow on an ALPHABETIC char — try to break at the last
+                # space or hyphen within this word for readability.
+                if atom.char_class == CharClass.ALPHABETIC:
+                    lookback = i - 1
+                    while lookback > start:
+                        prev_class = atoms[lookback].char_class
+                        if prev_class in (CharClass.SPACE, CharClass.HYPHEN):
+                            # Break AFTER the space/hyphen → it stays on line end
+                            return lookback + 1
+                        if prev_class != CharClass.ALPHABETIC:
+                            break  # different script — stop looking
+                        lookback -= 1
                 break        # overflow — break before this atom
             width += atom.width
             i += 1
@@ -283,18 +353,25 @@ class KinsokuLineBreaker:
 
             今天天气真好         ← "，" pulled to next line
             ，我想出门。
+
+        Pull-back stops after ``config.max_pull_distance`` steps to
+        prevent pulling the entire line contents.
         """
-        while break_at < n and break_at > line_start:
+        max_dist = self.config.max_pull_distance
+        pulls = 0
+        while break_at < n and break_at > line_start and pulls < max_dist:
             first_of_next = atoms[break_at]
             if not self._is_forbidden_at_line_start(first_of_next):
                 break
             break_at -= 1
+            pulls += 1
             # Continue pulling if the preceding char is forbidden at line-end.
             # Handles chains like  "《text》"  → 《 must not end a line.
-            while break_at > line_start and self._is_forbidden_at_line_end(
+            while break_at > line_start and pulls < max_dist and self._is_forbidden_at_line_end(
                 atoms[break_at - 1]
             ):
                 break_at -= 1
+                pulls += 1
         return break_at
 
     # ------------------------------------------------------------------
@@ -308,12 +385,17 @@ class KinsokuLineBreaker:
 
         When the atom at *break_at - 1* (last of the current line) has type
         ``OPEN``, it is moved to the following line.
+
+        Stops after ``config.max_push_distance`` steps.
         """
-        while break_at > line_start and break_at <= n:
+        max_dist = self.config.max_push_distance
+        pushes = 0
+        while break_at > line_start and break_at <= n and pushes < max_dist:
             last_of_line = atoms[break_at - 1]
             if not self._is_forbidden_at_line_end(last_of_line):
                 break
             break_at -= 1
+            pushes += 1
         return break_at
 
     # ------------------------------------------------------------------
@@ -382,12 +464,14 @@ class KnuthPlassLineBreaker:
         stretch_spacing: float = 10.0,
         shrink_spacing: float = 5.0,
         tolerance: float = 1.0,
+        config: Optional[KinsokuConfig] = None,
     ) -> None:
         self.max_width = max_width
         self.indent = indent
         self.stretch_spacing = stretch_spacing
         self.shrink_spacing = shrink_spacing
         self.tolerance = tolerance
+        self.config = config or KinsokuConfig()
 
     # ------------------------------------------------------------------
     # Public API
@@ -441,6 +525,13 @@ class KnuthPlassLineBreaker:
                 if seg_lines:
                     all_lines.extend(seg_lines)
                 else:
+                    from loguru import logger
+
+                    logger.warning(
+                        "Knuth-Plass line breaking failed for segment "
+                        "[{}:{}] ({} atoms), falling back to KinsokuLineBreaker",
+                        si, ei, ei - si,
+                    )
                     all_lines.extend(self._fallback_segment(atoms, si, ei))
 
         return all_lines
@@ -452,31 +543,53 @@ class KnuthPlassLineBreaker:
     def _break_segment(
         self, atoms: list[Atom], seg_start: int, seg_end: int
     ) -> list[tuple[int, int, float]]:
-        """Run Knuth-Plass DP on atoms[seg_start:seg_end] (no newlines)."""
+        """Run Knuth-Plass DP on atoms[seg_start:seg_end] (no newlines).
+
+        Penalties from ``self.config`` shape breakpoint preferences:
+        - Mid-word breaks (ALPHABETIC→ALPHABETIC): penalty_mid_word (default +50)
+        - Hyphen / breakable symbol: penalty_hyphen (default +10)
+        - Sentence-end breaks (after NON_STARTER): penalty_sentence_end (default -50)
+        - Forbidden breaks (CLOSE/NON_STARTER at line-start, OPEN at line-end):
+          hard-blocked via can_break.
+        """
         m = seg_end - seg_start
         if m == 0:
             return []
         if m == 1:
             return [(seg_start, seg_end, 0.0)]
 
-        # Build valid-break array for this segment.
+        # Build valid-break and penalty arrays for this segment.
         # can_break[k] = can we break BEFORE atoms[seg_start + k]?
         can_break = [False] * (m + 1)
+        break_penalty = [0.0] * (m + 1)
         can_break[0] = True  # segment start
         can_break[m] = True  # segment end
+
+        cfg = self.config
 
         for k in range(1, m):
             prev = atoms[seg_start + k - 1]
             nxt = atoms[seg_start + k]
+
+            # Hard constraints — kinsoku-forbidden breaks
             if nxt.char_class in (CharClass.CLOSE, CharClass.NON_STARTER):
                 can_break[k] = False
-            elif prev.char_class == CharClass.OPEN:
+                continue
+            if prev.char_class == CharClass.OPEN:
                 can_break[k] = False
-            else:
-                can_break[k] = True
+                continue
+
+            can_break[k] = True
+
+            # Soft penalty — discourage mid-word breaks, prefer sentence-end
+            if prev.char_class == CharClass.ALPHABETIC and nxt.char_class == CharClass.ALPHABETIC:
+                break_penalty[k] = cfg.penalty_mid_word
+            elif prev.char_class in (CharClass.HYPHEN,) or nxt.char_class in (CharClass.HYPHEN,):
+                break_penalty[k] = cfg.penalty_hyphen
+            elif prev.char_class == CharClass.NON_STARTER:
+                break_penalty[k] = cfg.penalty_sentence_end
 
         # Prefix sums for fast width/stretch/shrink queries
-        # widths[k] = sum of atoms[seg_start:seg_start+k] widths
         widths = [0.0] * (m + 1)
         for k in range(m):
             widths[k + 1] = widths[k] + atoms[seg_start + k].width
@@ -499,44 +612,42 @@ class KnuthPlassLineBreaker:
                     continue
 
                 natural_w = widths[end] - widths[start]
-                gap_count = end - start  # inter-atom gaps incl. final glue
+                gap_count = end - start
 
                 total_stretch = gap_count * stretch_sp
                 total_shrink = gap_count * shrink_sp
 
                 line_w = self.max_width
 
-                # Last line of a paragraph: don't stretch, but DO shrink
-                # if it would otherwise overflow.
                 if end == m:
                     if natural_w > line_w:
                         if total_shrink > 0:
                             ratio = (line_w - natural_w) / total_shrink
                             if ratio < -1.0:
-                                continue  # overfull even at max shrink
+                                continue
                         else:
-                            continue  # overfull, no shrink available
+                            continue
                     else:
-                        ratio = 0.0  # underfull last line — natural width
+                        ratio = 0.0
                     badness = 100.0 * abs(ratio) ** 3
-                    penalty = 0.0
+                    penalty = 0.0  # last line: no break penalty (matching TeX)
                 else:
                     ratio = 0.0
                     badness = 0.0
-                    penalty = 0.0
 
                     if natural_w < line_w:
                         if total_stretch > 0:
                             ratio = (line_w - natural_w) / total_stretch
                             if ratio > self.tolerance:
-                                continue  # too loose
+                                continue
                     elif natural_w > line_w:
                         if total_shrink > 0:
                             ratio = (line_w - natural_w) / total_shrink
                             if ratio < -1.0:
-                                continue  # overfull (can't shrink enough)
+                                continue
 
                     badness = 100.0 * abs(ratio) ** 3
+                    penalty = break_penalty[start]
 
                 if penalty >= 0:
                     demerits = (1.0 + badness + penalty) ** 2 + best_demerits[start]
@@ -617,21 +728,28 @@ def atomize_text(
             end_pos, emoji_char = emoji_map[offset]
             offset = end_pos
             font = emoji_font
-            # Zero-width emoji modifiers (FE0F/FE0E variation selectors,
-            # U+1F3FB-U+1F3FF skin tones) — keep them in the atom for
-            # correct combined rendering, but measure only the base char.
-            render_ch = ch  # full emoji including modifiers for rendering
-            while len(ch) > 1 and (ch[-1] in '️︎'
-                                   or '\U0001f3fb' <= ch[-1] <= '\U0001f3ff'):
-                ch = ch[:-1]
+            # *emoji_char* is the full sequence from emoji.emoji_list(),
+            # which correctly handles ZWJ (U+200D), variation selectors
+            # (FE0F/FE0E), and skin-tone modifiers (U+1F3FB–U+1F3FF).
+            render_ch = emoji_char
+            # Strip trailing zero-width modifiers from *emoji_char* for
+            # width measurement — they affect rendering but not metrics.
+            base = emoji_char
+            while len(base) > 1 and (
+                base[-1] in '️︎'
+                or '\U0001f3fb' <= base[-1] <= '\U0001f3ff'
+            ):
+                base = base[:-1]
+            # Skip any trailing variation selectors beyond the emoji map end
             while offset < total and text[offset] in '️︎':
                 offset += 1
-            w = measure_fn(ch, font)  # width from base char only
+            w = measure_fn(base, font)
             atom_class = CharClass.EMOJI
-            # If the font can't render the full emoji (modifiers = glyph 0),
-            # fall back to the base character to avoid tofu squares.
+            # If the font can't render the full emoji sequence (ZWJ /
+            # modifiers = glyph 0), fall back to the base chars to avoid
+            # tofu squares.
             if len(render_ch) > 1 and any(g == 0 for g in font.textToGlyphs(render_ch)):
-                render_ch = ch
+                render_ch = base
             atoms.append(Atom(render_ch, w, atom_class, font))
             continue
 
