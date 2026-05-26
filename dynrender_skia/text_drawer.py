@@ -50,10 +50,16 @@ class TextDrawer:
         self._width_cache: dict[tuple[str, int, int], float] = {}
         # Resolved font cache: (char, font_size) -> skia.Font
         self._font_cache: dict[tuple[str, int], skia.Font] = {}
+        self._cache_max = 2048
 
     # ------------------------------------------------------------------
     # Static helpers (used by tests)
     # ------------------------------------------------------------------
+
+    def _cache_put(self, cache: dict, key, value) -> None:
+        if len(cache) >= self._cache_max:
+            cache.pop(next(iter(cache)))
+        cache[key] = value
 
     @staticmethod
     def initialize_paint(font_color: tuple) -> skia.Paint:
@@ -172,7 +178,7 @@ class TextDrawer:
         emoji_info = await self.get_emoji_text(text)
         start_x, start_y, x_bound, y_bound, line_spacing = pos
 
-        from .typesetter import atomize_text, KnuthPlassLineBreaker, CharClass
+        from .typesetter import CharClass, KnuthPlassLineBreaker, atomize_text
 
         def measure(ch: str, font: skia.Font) -> float:
             fid = font.getTypeface().uniqueID()
@@ -186,14 +192,14 @@ class TextDrawer:
                     font_key = (ch, font_size)
                     if font_key not in self._font_cache:
                         resolved = self.match_font(ch, font_size)
-                        self._font_cache[font_key] = resolved or font
+                        self._cache_put(self._font_cache, font_key, resolved or font)
                     w = self._font_cache[font_key].measureText(ch)
             except Exception:
                 logger.opt(exception=True).warning(
                     "TextDrawer.measure failed for char={!r} font_size={}", ch, font_size,
                 )
                 w = font_size  # fallback width ≈ 1 em
-            self._width_cache[cache_key] = w
+            self._cache_put(self._width_cache, cache_key, w)
             return w
 
         atoms = atomize_text(text, measure, emoji_info, self.text_font, self.emoji_font)
@@ -221,7 +227,7 @@ class TextDrawer:
                 if not self._font_contains_character(font, atom.text):
                     font_key = (atom.text, font_size)
                     if font_key not in self._font_cache:
-                        self._font_cache[font_key] = self.match_font(atom.text, font_size) or font
+                        self._cache_put(self._font_cache, font_key, self.match_font(atom.text, font_size) or font)
                     font = self._font_cache[font_key]
                 draw_text = atom.text
                 blob = None

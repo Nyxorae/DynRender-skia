@@ -1,15 +1,34 @@
 """Template-method base class for renderers."""
 
 from abc import ABC, abstractmethod
-from os import path
-from typing import Optional
+from typing import Callable, Optional
 
-import emoji
 import numpy as np
 import skia
+from loguru import logger
 
 from ..config import PolyStyle
-from ..graphics import TextDrawer, draw_shadow, round_corners, paste
+from ..exceptions import DynRenderException, SkiaBaseError
+from ..graphics import TextDrawer, draw_shadow, paste, round_corners
+
+
+async def safe_run(fn: Callable, *args, **kwargs) -> Optional[np.ndarray]:
+    """Execute a render function with unified error handling.
+
+    Distinguishes between known render errors (SkiaBaseError) and
+    unexpected exceptions, logging at different levels accordingly.
+    """
+    try:
+        return await fn(*args, **kwargs)
+    except SkiaBaseError as e:
+        logger.error(f"Render aborted ({type(e).__name__}): {e}")
+        return None
+    except DynRenderException as e:
+        logger.error(f"Render aborted ({type(e).__name__}): {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"Unexpected render failure: {e}")
+        return None
 
 
 class BaseRenderer(ABC):

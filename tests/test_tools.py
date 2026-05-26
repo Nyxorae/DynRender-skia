@@ -1,6 +1,6 @@
 import pathlib
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import numpy as np
@@ -10,8 +10,8 @@ import respx
 import skia
 
 from dynrender_skia.config import create_style
-from dynrender_skia.graphics import merge_pictures, request_img, fetch_images, TextDrawer, paste
 from dynrender_skia.exceptions import ParseError
+from dynrender_skia.graphics import TextDrawer, fetch_images, merge_pictures, paste, request_img
 from dynrender_skia.typesetter import Atom, CharClass
 
 
@@ -111,7 +111,7 @@ class TestRequestImg:
 
     async def test_skia_encode_exception(self, client: httpx.AsyncClient, mock_img_url: str, caplog) -> None:
         async with respx.mock() as mock:
-            img_content = None
+            img_content = b""
             mock.get(mock_img_url).respond(content=img_content, status_code=200)
             _ = await request_img(client, mock_img_url, None)
             assert "Image decode error or request returned none in content" in caplog.text

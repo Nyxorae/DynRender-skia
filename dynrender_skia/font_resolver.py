@@ -4,7 +4,6 @@ Replaces the 15+ duplicated ``matchFamilyStyleCharacter`` calls scattered
 across the codebase with a single, cache-aware resolver.
 """
 
-from typing import Optional
 
 import skia
 
@@ -26,8 +25,9 @@ class FontResolver:
         self._font_style = font_style
         self._emoji_font_family = emoji_font_family
         self._font_mgr = skia.FontMgr()
-        # Flyweight cache: (typeface_id, font_size) → skia.Font
+        # Flyweight cache with LRU eviction on overflow
         self._font_cache: dict[tuple[int, int], skia.Font] = {}
+        self._cache_max = 128
 
     def resolve(self, char: str, preferred_font: skia.Font, font_size: int) -> skia.Font:
         """Return the best font for *char* at *font_size*.
@@ -80,7 +80,7 @@ class FontResolver:
         key = (typeface.uniqueID(), font_size)
         if key not in self._font_cache:
             try:
-                self._font_cache[key] = skia.Font(typeface, font_size)
+                font = skia.Font(typeface, font_size)
             except Exception:
                 from loguru import logger
 
@@ -89,4 +89,7 @@ class FontResolver:
                     "for typeface_id={}, size={}", typeface.uniqueID(), font_size,
                 )
                 raise
+            if len(self._font_cache) >= self._cache_max:
+                self._font_cache.pop(next(iter(self._font_cache)))
+            self._font_cache[key] = font
         return self._font_cache[key]
