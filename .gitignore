@@ -172,6 +172,8 @@ preview.png
 preview_*.png
 dynamic_*.json
 test_output/
+benchmark_output/
+scorecard_output/
 
 # Static files
 Static/
