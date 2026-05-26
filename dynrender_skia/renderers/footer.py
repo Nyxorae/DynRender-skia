@@ -6,6 +6,7 @@ from typing import Optional
 
 import numpy as np
 import skia
+from loguru import logger
 
 from ..config import PolyStyle
 from ..graphics import TextDrawer
@@ -34,5 +35,6 @@ class Footer:
                 self.style.color.font_color.sub_title,
             )
             return canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
-        except Exception:
+        except Exception as e:
+            logger.exception(e)
             return None

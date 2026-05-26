@@ -8,9 +8,10 @@ from typing import Optional
 import numpy as np
 import skia
 from dynamicadaptor.Header import Head
+from loguru import logger
 
 from ..config import PolyStyle
-from ..graphics import TextDrawer, fetch_images, paste, circle_crop
+from ..graphics import TextDrawer, circle_crop, fetch_images, paste
 
 
 class BiliHeader:
@@ -31,26 +32,27 @@ class BiliHeader:
             surface = skia.Surface(1080, 400)
             self.canvas = surface.getCanvas()
             self.canvas.clear(skia.Color(*self.style.color.background.normal))
-            result = await asyncio.gather(
-                self._paste_logo(),
-                self._draw_name(),
-                self._draw_pub_time(),
-                self._get_face_and_pendant(True),
-                self._get_face_and_pendant(),
-            )
-            await self._past_face()
-            await self._paste_pendant(result[4])
+            face_task = asyncio.ensure_future(self._get_face_and_pendant(True))
+            pendant_task = asyncio.ensure_future(self._get_face_and_pendant())
+            await self._paste_logo()
+            await self._draw_name()
+            await self._draw_pub_time()
+            face = await face_task
+            pendant = await pendant_task
+            await self._past_face(face)
+            await self._paste_pendant(pendant)
             await self._paste_vip()
             return self.canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
-        except Exception:
+        except Exception as e:
+            logger.exception(e)
             return None
 
-    async def _paste_pendant(self, pendant):
+    async def _paste_pendant(self, pendant: skia.Image) -> None:
         if pendant is not None:
             pendant = pendant.resize(190, 190)
             await paste(self.canvas, pendant, (10, 210))
 
-    async def _paste_vip(self):
+    async def _paste_vip(self) -> None:
         if self.message.official_verify and self.message.official_verify.type != -1:
             if self.message.official_verify.type == 0:
                 img_path = path.join(self.src_path, "official_yellow.png")
@@ -66,13 +68,12 @@ class BiliHeader:
             img = skia.Image.open(img_path).resize(45, 45)
             await paste(self.canvas, img, (120, 330))
 
-    async def _past_face(self):
-        face = await self._get_face_and_pendant(True)
+    async def _past_face(self, face: Optional[skia.Image]) -> None:
         if face:
             face = await circle_crop(face, 120)
             await paste(self.canvas, face, (45, 245))
 
-    async def _get_face_and_pendant(self, img_type: bool = False):
+    async def _get_face_and_pendant(self, img_type: bool = False) -> Optional[skia.Image]:
         if img_type:
             img_name = f"{self.message.mid}.webp"
             img_url = f"{self.message.face}@240w_240h_1c_1s.webp"
@@ -92,7 +93,7 @@ class BiliHeader:
             return img
         return None
 
-    async def _draw_pub_time(self):
+    async def _draw_pub_time(self) -> None:
         if self.message.pub_ts:
             pub_time = strftime("%Y-%m-%d %H:%M:%S", localtime(self.message.pub_ts))
         elif self.message.pub_time:
@@ -111,7 +112,7 @@ class BiliHeader:
         logo = skia.Image.open(path.join(self.src_path, "bilibili.png")).resize(231, 105)
         await paste(self.canvas, logo, (433, 20))
 
-    async def _draw_name(self):
+    async def _draw_name(self) -> None:
         if self.message.vip and self.message.vip.status == 1:
             color = (
                 self.style.color.font_color.name_big_vip
@@ -151,24 +152,25 @@ class RepostHeader:
                 pos = 35
             await self._draw_name(canvas, message.name, pos)
             return canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
-        except Exception:
+        except Exception as e:
+            logger.exception(e)
             return None
 
-    async def _draw_face(self, canvas, url, mid):
+    async def _draw_face(self, canvas: skia.Canvas, url: str, mid: int) -> None:
         if url:
             img = await self._get_face(mid, url)
             if img is not None:
                 face = await circle_crop(img, 80)
-            await paste(canvas, face, (40, 10))
+                await paste(canvas, face, (40, 10))
 
-    async def _draw_name(self, canvas, name, pos: int):
+    async def _draw_name(self, canvas: skia.Canvas, name: str, pos: int) -> None:
         await self._drawer.draw_text(
             canvas, name, self.style.font.font_size.name,
             (pos, 70, 1010, 70, 0),
             self.style.color.font_color.rich_text,
         )
 
-    async def _get_face(self, mid, url):
+    async def _get_face(self, mid: int, url: str) -> Optional[skia.Image]:
         img_name = f"{mid}.webp"
         img_url = f"{url}@240w_240h_1c_1s.webp"
         img_path = path.join(self.static_path, "Cache", "Face", img_name)

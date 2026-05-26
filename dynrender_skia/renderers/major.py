@@ -8,12 +8,11 @@ import numpy as np
 import skia
 from dynamicadaptor.Content import RichTextDetail, Text
 from dynamicadaptor.Majors import Major, RichTextNodes
-
 from loguru import logger
 
 from ..config import PolyStyle
 from ..font_resolver import FontResolver
-from ..graphics import TextDrawer, fetch_images, paste, merge_pictures, draw_shadow, round_corners
+from ..graphics import TextDrawer, draw_shadow, fetch_images, merge_pictures, paste, round_corners
 from .registry import register_major
 from .text import BiliText
 
@@ -190,13 +189,13 @@ class DynMajorDraw:
 
 @register_major("MAJOR_TYPE_DRAW")
 class MajorDraw(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         return await DynMajorDraw(self.style, items=self.major.draw.items).run(repost)
 
 
 @register_major("MAJOR_TYPE_ARCHIVE")
 class MajorArchive(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -209,7 +208,8 @@ class MajorArchive(BaseMajorRenderer):
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             await self._draw_text(self.major.archive.title, self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             await paste(self.canvas, tv, (905, 455))
             if self.major.archive.badge is not None and self.major.archive.badge.text != "":
                 await self._make_tag(self.major.archive.badge.text, self.style.font.font_size.text)
@@ -222,7 +222,7 @@ class MajorArchive(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_LIVE_RCMD")
 class MajorLiveRcmd(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -236,7 +236,8 @@ class MajorLiveRcmd(BaseMajorRenderer):
             await self._draw_text(self.major.live_rcmd.content.live_play_info.title,
                                   self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             await self._make_tag("直播中", self.style.font.font_size.text)
             await self._make_sub_tag(
                 self.major.live_rcmd.content.live_play_info.watched_show.text_large,
@@ -256,7 +257,7 @@ class MajorOpus(BaseMajorRenderer):
             emoji=node.emoji.dict() if node.type == "RICH_TEXT_NODE_TYPE_EMOJI" else None,
         )
 
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         pics = []
         try:
             if self.major.opus.title:
@@ -299,7 +300,7 @@ class MajorOpus(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_ARTICLE")
 class MajorArticle(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 640)
         self.canvas = surface.getCanvas()
@@ -320,10 +321,12 @@ class MajorArticle(BaseMajorRenderer):
             url_list = [f"{i}@360w_360h_1c" for i in self.major.article.covers]
             imgs = await fetch_images(url_list, (330, 330))
             for i, j in enumerate(imgs):
-                await paste(self.canvas, j, (35 + i * 340, 20))
+                if j is not None:
+                    await paste(self.canvas, j, (35 + i * 340, 20))
         else:
             img = await fetch_images(f"{self.major.article.covers[0]}@647w_150h_1c.webp", (1010, 300))
-            await paste(self.canvas, img, (35, 20))
+            if img is not None:
+                await paste(self.canvas, img, (35, 20))
 
     async def _draw_title_and_desc(self):
         title = self.major.article.title
@@ -337,7 +340,7 @@ class MajorArticle(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_COMMON")
 class MajorCommon(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 285)
         self.canvas = surface.getCanvas()
@@ -347,7 +350,8 @@ class MajorCommon(BaseMajorRenderer):
             rec = skia.Rect.MakeXYWH(35, 20, 1010, 245)
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             cover = await fetch_images(f"{self.major.common.cover}@245w_245h_1c.webp", (245, 245))
-            await paste(self.canvas, cover, (35, 20))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 20))
             await self._make_title()
             await self._make_common_tag()
             return self.canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
@@ -381,7 +385,7 @@ class MajorCommon(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_MUSIC")
 class MajorMusic(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 285)
         self.canvas = surface.getCanvas()
@@ -391,7 +395,8 @@ class MajorMusic(BaseMajorRenderer):
             rec = skia.Rect.MakeXYWH(35, 20, 1010, 245)
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             cover = await fetch_images(f"{self.major.music.cover}@245w_245h_1c.webp", (245, 245))
-            await paste(self.canvas, cover, (35, 20))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 20))
             await self._make_title()
             return self.canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
         except Exception as e:
@@ -407,7 +412,7 @@ class MajorMusic(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_PGC")
 class MajorPgc(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -420,7 +425,8 @@ class MajorPgc(BaseMajorRenderer):
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             await self._draw_text(self.major.pgc.title, self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             await paste(self.canvas, tv, (905, 455))
             tag = self.major.pgc.badge.text if (self.major.pgc.badge and self.major.pgc.badge.text) else "投稿视频"
             await self._make_tag(tag, self.style.font.font_size.text)
@@ -433,7 +439,7 @@ class MajorPgc(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_MEDIALIST")
 class MajorMediaList(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -446,7 +452,8 @@ class MajorMediaList(BaseMajorRenderer):
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             await self._draw_text(self.major.medialist.title, self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             tag = self.major.medialist.badge.text if self.major.medialist.badge else "投稿视频"
             await self._make_tag(tag, self.style.font.font_size.text)
             await self._make_sub_tag(self.major.medialist.sub_title, self.style.font.font_size.title)
@@ -459,7 +466,7 @@ class MajorMediaList(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_COURSES")
 class MajorCourses(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -472,7 +479,8 @@ class MajorCourses(BaseMajorRenderer):
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             await self._draw_text(self.major.courses.title, self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             tag = self.major.courses.badge.text if (self.major.courses.badge and self.major.courses.badge.text) else "投稿视频"
             await self._make_tag(tag, self.style.font.font_size.text)
             await self._make_sub_tag(self.major.courses.desc, self.style.font.font_size.title)
@@ -485,7 +493,7 @@ class MajorCourses(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_UGC_SEASON")
 class MajorUgc(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -498,7 +506,8 @@ class MajorUgc(BaseMajorRenderer):
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             await self._draw_text(self.major.ugc_season.title, self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             tag = self.major.ugc_season.badge.text if (self.major.ugc_season.badge and self.major.ugc_season.badge.text) else "投稿视频"
             await self._make_tag(tag, self.style.font.font_size.text)
             await self._make_sub_tag(self.major.ugc_season.duration_text, self.style.font.font_size.title)
@@ -511,7 +520,7 @@ class MajorUgc(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_LIVE")
 class MajorLive(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 695)
         self.canvas = surface.getCanvas()
@@ -523,7 +532,8 @@ class MajorLive(BaseMajorRenderer):
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
             await self._draw_text(self.major.live.title, self.style.font.font_size.text,
                                   (60, 650, 980, 600, 10), self.style.color.font_color.text)
-            await paste(self.canvas, cover, (35, 25))
+            if cover is not None:
+                await paste(self.canvas, cover, (35, 25))
             tag = self.major.live.badge.text if (self.major.live.badge and self.major.live.badge.text) else "投稿视频"
             await self._make_tag(tag, self.style.font.font_size.text)
             await self._make_sub_tag(self.major.live.desc_second, self.style.font.font_size.title)
@@ -535,7 +545,7 @@ class MajorLive(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_NONE")
 class MajorNone(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 100)
         self.canvas = surface.getCanvas()
@@ -553,7 +563,7 @@ class MajorNone(BaseMajorRenderer):
 
 @register_major("MAJOR_TYPE_BLOCKED")
 class MajorBlocked(BaseMajorRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 1200)
         self.canvas = surface.getCanvas()
@@ -566,8 +576,10 @@ class MajorBlocked(BaseMajorRenderer):
             await self._draw_shadow((40, 100, 1000, 1000), 20, bg)
             rec = skia.Rect.MakeXYWH(40, 100, 1000, 1000)
             self.canvas.clipRRect(skia.RRect(rec, 20, 20), skia.ClipOp.kIntersect)
-            await paste(self.canvas, result[1], (456, 380))
-            await paste(self.canvas, result[0].resize(1000, 1000), (40, 100))
+            if result[1] is not None:
+                await paste(self.canvas, result[1], (456, 380))
+            if result[0] is not None:
+                await paste(self.canvas, result[0].resize(1000, 1000), (40, 100))
             text = self.major.blocked.hint_message.split("\n")
             await self._draw_text(text[0], self.style.font.font_size.name,
                                   (380, 630, 980, 600, 10), self.style.color.font_color.sub_title)

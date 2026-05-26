@@ -1,7 +1,6 @@
 """Common graphics primitives: canvas operations, text drawing, image fetching/merging."""
 
 import asyncio
-from os import path
 from typing import Optional, Union
 
 import httpx
@@ -9,8 +8,6 @@ import numpy as np
 import skia
 from loguru import logger
 from numpy import ndarray
-
-from .config import PolyStyle
 
 # ---------------------------------------------------------------------------
 # Image fetching — shared connection pool for performance
@@ -84,36 +81,7 @@ request_img = _request_img
 # Image merging
 # ---------------------------------------------------------------------------
 
-
-# async def merge_pictures(img_list: list[ndarray]) -> ndarray:
-#     """Vertically stack image arrays into one.
-
-#     Pre-allocates the output array when possible (avoids the O(n²)
-#     copying of repeated ``vstack`` calls).
-#     """
-#     # Fast path: single image
-#     if len(img_list) == 1 and img_list[0] is not None:
-#         return img_list[0]
-
-#     # Filter None entries and validate widths
-#     valid = [img for img in img_list if img is not None]
-#     if not valid:
-#         return np.zeros([0, 1080, 4], np.uint8)
-#     for img in valid:
-#         if img.shape[1] != 1080:
-#             raise ValueError("The width of the image must be 1080")
-
-#     # Pre-allocate and copy in one pass
-#     total_height = sum(img.shape[0] for img in valid)
-#     result = np.zeros([total_height, 1080, 4], np.uint8)
-#     offset = 0
-#     for img in valid:
-#         h = img.shape[0]
-#         result[offset:offset + h] = img
-#         offset += h
-#     return result
-
-async def merge_pictures(img_list: list[ndarray]) -> ndarray:
+async def merge_pictures(img_list: list[Optional[ndarray]]) -> ndarray:
     """Vertically stack image arrays into one."""
     # 保留原始行为：单元素列表且非 None 直接返回（不做复制，也不检查宽度）
     if len(img_list) == 1 and img_list[0] is not None:
@@ -155,85 +123,6 @@ async def paste(canvas: skia.Canvas, target: skia.Image, position: tuple, clear_
             canvas.restore()
     except AttributeError as e:
         logger.exception(f"Failed to paste image: {e!s}")
-
-
-# ---------------------------------------------------------------------------
-# Canvas builder — flattens the repetitive surface→clear→shadow→clip flow
-# ---------------------------------------------------------------------------
-
-
-class CanvasBuilder:
-    """Builder pattern for Skia canvas construction.
-
-    Usage::
-
-        builder = CanvasBuilder(1080, 695).with_background(bg).with_shadow(
-            (35, 25, 1010, 655), 20, bg
-        ).with_clip((35, 25, 1010, 665), 20)
-        canvas = builder.build()
-        # ... draw on canvas ...
-        arr = builder.to_array()
-    """
-
-    def __init__(self, width: int, height: int) -> None:
-        self._surface = skia.Surface(width, height)
-        self._canvas = self._surface.getCanvas()
-        self._bg_color: tuple = (255, 255, 255, 255)
-
-    def with_background(self, color: tuple) -> "CanvasBuilder":
-        """Clear the canvas with *color* (RGBA tuple)."""
-        self._canvas.clear(skia.Color(*color))
-        self._bg_color = color
-        return self
-
-    def with_shadow(self, rect: tuple, corner: int, bg_color: tuple) -> "CanvasBuilder":
-        """Draw a rounded rectangle with a drop-shadow.
-
-        Args:
-            rect: ``(x, y, width, height)`` of the shadow area.
-            corner: Corner radius in pixels.  0 = sharp rectangle.
-            bg_color: Background color (the shadow is cast FROM this).
-        """
-        self._sync_shadow(rect, corner, bg_color)
-        return self
-
-    def with_clip(self, rect: tuple, corner: int) -> "CanvasBuilder":
-        """Clip subsequent drawing to a rounded rectangle.
-
-        Args:
-            rect: ``(x, y, width, height)``.
-            corner: Corner radius.
-        """
-        rec = skia.Rect.MakeXYWH(*rect)
-        self._canvas.clipRRect(skia.RRect(rec, corner, corner), skia.ClipOp.kIntersect)
-        return self
-
-    def build(self) -> skia.Canvas:
-        """Return the constructed canvas."""
-        return self._canvas
-
-    def to_array(self):
-        """Export the canvas contents as an RGBA numpy array."""
-        return self._canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType)
-
-    # -- internal ----------------------------------------------------------
-
-    async def _async_shadow(self, rect: tuple, corner: int, bg_color: tuple) -> None:
-        await draw_shadow(self._canvas, rect, corner, bg_color)
-
-    def _sync_shadow(self, rect: tuple, corner: int, bg_color: tuple) -> None:
-        """Synchronous shadow — use when ``asyncio`` is not needed."""
-        x, y, w, h = rect
-        rec = skia.Rect.MakeXYWH(x, y, w, h)
-        paint = skia.Paint(
-            Color=skia.Color(*bg_color),
-            AntiAlias=True,
-            ImageFilter=skia.ImageFilters.DropShadow(0, 0, 10, 10, skia.Color(120, 120, 120)),
-        )
-        if corner != 0:
-            self._canvas.drawRoundRect(rec, corner, corner, paint)
-        else:
-            self._canvas.drawRect(rec, paint)
 
 
 # ---------------------------------------------------------------------------
@@ -317,25 +206,6 @@ async def make_badge(
     )  # type: ignore
     tag_img = await round_corners(tag_img, 10)
     await paste(canvas, tag_img, pos)
-
-
-async def make_sub_tag(
-    canvas: skia.Canvas, text: str, font: skia.Font, font_size: int, pos: tuple
-) -> None:
-    font.setSize(font_size)
-    size = font.measureText(text)
-    surface = skia.Surface(int(size + 20), int(font.getSize() + 20))
-    tag_canvas = surface.getCanvas()
-    tag_canvas.clear(skia.Color(0, 0, 0, 150))
-    blob = skia.TextBlob(text, font)
-    paint = skia.Paint(AntiAlias=True, Color=skia.Color4f.kWhite)
-    tag_canvas.drawTextBlob(blob, 10, int(font.getSize() + 5), paint)
-    img = skia.Image.fromarray(
-        tag_canvas.toarray(colorType=skia.ColorType.kRGBA_8888_ColorType),
-        colorType=skia.ColorType.kRGBA_8888_ColorType,
-    )
-    await paste(canvas, await round_corners(img, 10), pos)
-
 
 # ---------------------------------------------------------------------------
 # Text drawing (unified engine) — lives in its own module for separation

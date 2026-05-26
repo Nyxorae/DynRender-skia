@@ -8,9 +8,10 @@ import emoji
 import numpy as np
 import skia
 from dynamicadaptor.Content import Text
+from loguru import logger
 
 from ..config import PolyStyle
-from ..graphics import TextDrawer, fetch_images, paste, merge_pictures
+from ..graphics import TextDrawer, fetch_images, merge_pictures, paste
 from ..typesetter import Atom, CharClass, KnuthPlassLineBreaker, classify_char
 
 
@@ -32,6 +33,8 @@ class BiliText:
         self._drawer = TextDrawer(style)
 
     async def run(self, dyn_text: Text, repost: bool = False) -> Optional[np.ndarray]:
+        self.image_list = []
+        self.emoji_dict = {}
         self.text_font = skia.Font(
             skia.Typeface.MakeFromName(self.style.font.font_family, self.style.font.font_style),
             self.style.font.font_size.text,
@@ -50,7 +53,8 @@ class BiliText:
                 tasks.append(self._make_text_image(dyn_text))
             await asyncio.gather(*tasks)
             return await merge_pictures(self.image_list)
-        except Exception:
+        except Exception as e:
+            logger.exception(e)
             return None
 
     async def _make_text_image(self, dyn_text):
@@ -178,13 +182,13 @@ class BiliText:
                         offset = end_pos
                         # Zero-width emoji modifiers — keep in atom for
                         # correct combined rendering, measure base only.
-                        if offset < total and text[offset] in '️︎':
+                        if offset < total and text[offset] in "️︎":
                             offset += 1
                         font = self.emoji_font
                         ch = emoji_char
                         render_ch = ch  # full emoji for rendering
-                        while len(ch) > 1 and (ch[-1] in '️︎'
-                                               or '\U0001f3fb' <= ch[-1] <= '\U0001f3ff'):
+                        while len(ch) > 1 and (ch[-1] in "️︎"
+                                               or "\U0001f3fb" <= ch[-1] <= "\U0001f3ff"):
                             ch = ch[:-1]
                         # Fall back to system font if emoji font can't render it
                         if font.textToGlyphs(ch)[0] == 0:
@@ -299,7 +303,7 @@ class BiliText:
         Icons are loaded once and cached on the instance (hot path —
         the same icons appear in many posts).
         """
-        if not hasattr(self, '_icon_cache'):
+        if not hasattr(self, "_icon_cache"):
             self._icon_cache: dict[str, skia.Image] = {}
 
         rich_dic = {}

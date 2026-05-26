@@ -15,6 +15,7 @@ from os import path
 from typing import Optional
 
 from dynamicadaptor.Message import RenderMessage
+from loguru import logger
 
 from .config import create_style, init_static_path
 from .graphics import merge_pictures
@@ -78,8 +79,7 @@ class DynRender:
             if cls:
                 tasks.append(cls(src_path, self.style, message.major).run())
             else:
-                import logging
-                logging.getLogger().warning(
+                logger.warning(
                     f"{message.major.type} is not supported"
                 )
 
@@ -93,8 +93,7 @@ class DynRender:
             if cls:
                 tasks.append(cls(src_path, self.style, message.additional).run())
             else:
-                import logging
-                logging.getLogger().warning(
+                logger.warning(
                     f"{message.additional.type} IS NOT SUPPORT NOW"
                 )
 

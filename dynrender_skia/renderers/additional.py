@@ -7,12 +7,11 @@ from typing import Optional
 import numpy as np
 import skia
 from dynamicadaptor.AddonCard import Additional
-
 from loguru import logger
 
 from ..config import PolyStyle
 from ..font_resolver import FontResolver
-from ..graphics import TextDrawer, fetch_images, paste, draw_shadow, round_corners, make_badge
+from ..graphics import TextDrawer, draw_shadow, fetch_images, make_badge, paste, round_corners
 from .registry import register_additional
 
 
@@ -62,7 +61,7 @@ class BaseAdditionalRenderer:
 
 @register_additional("ADDITIONAL_TYPE_RESERVE")
 class AdditionalReserve(BaseAdditionalRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 225)
         self.canvas = surface.getCanvas()
@@ -97,7 +96,7 @@ class AdditionalReserve(BaseAdditionalRenderer):
 
 @register_additional("ADDITIONAL_TYPE_UPOWER_LOTTERY")
 class AdditionalUpowerLottery(BaseAdditionalRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 225)
         self.canvas = surface.getCanvas()
@@ -122,7 +121,7 @@ class AdditionalUpowerLottery(BaseAdditionalRenderer):
 
 @register_additional("ADDITIONAL_TYPE_GOODS")
 class AdditionalGoods(BaseAdditionalRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 310)
         self.canvas = surface.getCanvas()
@@ -146,13 +145,15 @@ class AdditionalGoods(BaseAdditionalRenderer):
         covers = await fetch_images(url_list, (190, 190))
         if len(covers) > 1:
             for i, j in enumerate(covers):
-                x = 45 + i * 200
-                if x > 1000:
-                    break
-                await paste(self.canvas, await round_corners(j, 10), (x, 75))
+                if j is not None:
+                    x = 45 + i * 200
+                    if x > 1000:
+                        break
+                    await paste(self.canvas, await round_corners(j, 10), (x, 75))
         else:
-            await paste(self.canvas, await round_corners(covers[0], 10), (60, 75))
-            await self._make_badge("去看看", self.style.font.font_size.time, (860, 125), (155, 75), (25, 50))
+            if covers[0] is not None:
+                await paste(self.canvas, await round_corners(covers[0], 10), (60, 75))
+                await self._make_badge("去看看", self.style.font.font_size.time, (860, 125), (155, 75), (25, 50))
 
     async def _make_title_desc(self):
         if len(self.additional.goods.items) > 1:
@@ -166,7 +167,7 @@ class AdditionalGoods(BaseAdditionalRenderer):
 
 @register_additional("ADDITIONAL_TYPE_UGC")
 class AdditionalUgc(BaseAdditionalRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 280)
         self.canvas = surface.getCanvas()
@@ -185,7 +186,8 @@ class AdditionalUgc(BaseAdditionalRenderer):
 
     async def _make_cover(self):
         cover = await fetch_images(f"{self.additional.ugc.cover}@340w_195h_1c.webp")
-        await paste(self.canvas, await round_corners(cover, 10), (60, 45))
+        if cover is not None:
+            await paste(self.canvas, await round_corners(cover, 10), (60, 45))
 
     async def _make_title_desc(self):
         await self._draw_text(self.additional.ugc.title, self.style.font.font_size.title,
@@ -213,7 +215,7 @@ class AdditionalUgc(BaseAdditionalRenderer):
 
 @register_additional("ADDITIONAL_TYPE_VOTE")
 class AdditionalVote(BaseAdditionalRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 280)
         self.canvas = surface.getCanvas()
@@ -244,7 +246,7 @@ class AdditionalVote(BaseAdditionalRenderer):
 
 @register_additional("ADDITIONAL_TYPE_COMMON")
 class AdditionalCommon(BaseAdditionalRenderer):
-    async def run(self, repost=False):
+    async def run(self, repost: bool = False) -> Optional[np.ndarray]:
         bg = self._bg(repost)
         surface = skia.Surface(1080, 340)
         self.canvas = surface.getCanvas()
@@ -271,7 +273,8 @@ class AdditionalCommon(BaseAdditionalRenderer):
         else:
             cover_url = f"{self.additional.common.cover}@145w_195h_1c.webp"
             cover = await fetch_images(cover_url, (145, 195))
-        await paste(self.canvas, await round_corners(cover, 15), (60, 110))
+        if cover is not None:
+            await paste(self.canvas, await round_corners(cover, 15), (60, 110))
 
     async def _make_title(self):
         y = 150 if self.additional.common.desc2 else 180

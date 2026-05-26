@@ -2,14 +2,16 @@
 
 import asyncio
 from os import path
+from typing import Optional
 
+import numpy as np
 from dynamicadaptor.Repost import Forward
 
 from ..config import PolyStyle
 from ..graphics import merge_pictures
 from .header import RepostHeader
+from .registry import get_additional_renderer, get_major_renderer
 from .text import BiliText
-from .registry import get_major_renderer, get_additional_renderer
 
 
 class BiliRepost:
@@ -19,7 +21,7 @@ class BiliRepost:
         self.static_path = static_path
         self.style = style
 
-    async def run(self, message: Forward):
+    async def run(self, message: Forward) -> Optional[np.ndarray]:
         src_path = path.join(self.static_path, "Src")
         tasks = [RepostHeader(self.static_path, self.style).run(message.header)]
         if message.text is not None:
