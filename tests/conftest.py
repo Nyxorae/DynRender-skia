@@ -7,11 +7,9 @@ from _pytest.logging import LogCaptureFixture
 from _pytest.tmpdir import TempPathFactory
 from loguru import logger
 
-from dynrender_skia.Core import DynRender
-
 
 @pytest.fixture(scope="session")
-def shared_cache(tmp_path_factory: TempPathFactory) -> object:
+def shared_cache(tmp_path_factory: TempPathFactory) -> pathlib.Path:
     cache_dir = tmp_path_factory.mktemp("cache", numbered=False)
     logger.info(f"创建共享缓存目录：{cache_dir}")
     yield cache_dir
@@ -25,7 +23,8 @@ def resource_dir() -> pathlib.Path:
 
 
 @pytest.fixture(scope="session")
-def dynrender_instance(shared_cache: pathlib.Path) -> DynRender:
+def dynrender_instance(shared_cache: pathlib.Path):
+    from dynrender_skia.Core import DynRender
     return DynRender(static_path=str(shared_cache))
 
 

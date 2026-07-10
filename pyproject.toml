@@ -11,8 +11,6 @@ dependencies = [
     "httpx<1.0.0,>=0.24.1",
     "emoji<3.0.0,>=2.6.0",
     "dynamicadaptor<1.0.0,>=0.4.9",
-    "aiofiles~=23.2",
-    "tenacity>=8.4.1",
 ]
 requires-python = ">=3.9,<4.0"
 readme = "README.md"
@@ -26,6 +24,7 @@ test = [
     "pytest-xdist~=3.5",
     "respx~=0.20",
     "pytest-mock>=3.14.0",
+    "aiofiles~=23.2",
 ]
 tool = [
     "viztracer~=0.16",

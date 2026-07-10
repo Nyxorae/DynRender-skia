@@ -166,6 +166,14 @@ cython_debug/
 # test file
 sample
 .tests/preview.png
+preview.png
+
+# Generated preview and debug output
+preview_*.png
+dynamic_*.json
+test_output/
+benchmark_output/
+scorecard_output/
 
 # Static files
 Static/
