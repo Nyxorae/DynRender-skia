@@ -35,7 +35,7 @@ async def main(dynamic_id: str):
     print(f"Author: {item['modules']['module_author']['name']}")
 
     # Convert web response to RenderMessage
-    message = await formate_message("web", item)
+    message = await formate_message(item)
     if message is None:
         print("Failed to formate message")
         return 1
@@ -57,5 +57,5 @@ async def main(dynamic_id: str):
 
 
 if __name__ == "__main__":
-    did = sys.argv[1] if len(sys.argv) > 1 else "1202655761342136353"
+    did = sys.argv[1] if len(sys.argv) > 1 else "1225493328666034183"
     sys.exit(asyncio.run(main(did)))

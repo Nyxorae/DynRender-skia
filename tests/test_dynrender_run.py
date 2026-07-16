@@ -20,7 +20,7 @@ async def test_dyn_render_run(resource_dir, dynrender_instance):
         resp = await f.read()
 
     message_data = json.loads(resp)
-    message = await formate_message("web", message_data["data"]["item"])
+    message = await formate_message(message_data["data"]["item"])
     img = await dynrender_instance.run(message)
 
     img = skia.Image.fromarray(img, colorType=skia.ColorType.kRGBA_8888_ColorType)

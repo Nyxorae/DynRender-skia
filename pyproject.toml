@@ -1,6 +1,6 @@
 [project]
 name = "dynrender_skia"
-version = "0.2.9"
+version = "0.3.0"
 description = "使用skia-python将BiliBili动态渲染为图片"
 authors = [
     { name = "DMC", email = "lzxder@outlook.com" },
@@ -20,14 +20,9 @@ license = { text = "GNU GPLv3" }
 test = [
     "pytest~=8.1",
     "pytest-asyncio~=0.23",
-    "pytest-cov~=4.1",
-    "pytest-xdist~=3.5",
     "respx~=0.20",
     "pytest-mock>=3.14.0",
     "aiofiles~=23.2",
-]
-tool = [
-    "viztracer~=0.16",
 ]
 
 [tool.pdm.build]

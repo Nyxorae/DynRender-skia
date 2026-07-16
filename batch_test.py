@@ -53,7 +53,7 @@ async def fetch_dynamic(client: httpx.AsyncClient, did: str) -> dict | None:
 
 
 async def render_dynamic(engine: DynRender, item: dict) -> skia.Image | None:
-    msg = await formate_message("web", item)
+    msg = await formate_message(item)
     if msg is None:
         return None
     arr = await engine.run(msg)

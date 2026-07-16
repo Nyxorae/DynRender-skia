@@ -219,7 +219,7 @@ async def main():
                 results.append(R(tag=tag, desc=desc, did=did, err="API fetch failed"))
                 continue
 
-            msg = await formate_message("web", data["data"]["item"])
+            msg = await formate_message(data["data"]["item"])
             if msg is None:
                 print("FAIL")
                 results.append(R(tag=tag, desc=desc, did=did, err="Parse failed"))

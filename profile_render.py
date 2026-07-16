@@ -545,7 +545,7 @@ async def main(dynamic_id: str, json_output: bool = False):
 
     # ---- Phase 2: Format message -----------------------------------------
     t0 = time.perf_counter()
-    message = await formate_message("web", item)
+    message = await formate_message(item)
     _record("2.format_message", (time.perf_counter() - t0) * 1000)
 
     if message is None:
